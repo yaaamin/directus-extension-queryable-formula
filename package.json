@@ -1,0 +1,44 @@
+{
+  "name": "directus-extension-queryable-formula",
+  "version": "1.0.0",
+  "description": "Formula field that stores computed values in DB for querying",
+  "icon": "extension",
+  "keywords": [
+    "directus",
+    "directus-extension",
+    "directus-extension-bundle"
+  ],
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "directus:extension": {
+    "type": "bundle",
+    "partial": false,
+    "entries": [
+      {
+        "type": "interface",
+        "name": "formula-interface",
+        "source": "src/formula-interface/index.ts"
+      },
+      {
+        "type": "hook",
+        "name": "formula-hook",
+        "source": "src/formula-hook/index.ts"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "directus-extension build",
+    "dev": "directus-extension build -w --no-minify",
+    "link": "directus-extension link",
+    "validate": "directus-extension validate",
+    "add": "directus-extension add"
+  },
+  "devDependencies": {
+    "@directus/extensions-sdk": "17.0.10",
+    "typescript": "^5.9.3",
+    "vue": "^3.5.29",
+    "@types/node": "^25.3.5"
+  }
+}
