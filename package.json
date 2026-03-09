@@ -32,6 +32,11 @@
         "type": "hook",
         "name": "formula-hook",
         "source": "src/formula-hook/index.ts"
+      },
+      {
+        "type": "endpoint",
+        "name": "queryable-formula",
+        "source": "src/formula-endpoint/index.ts"
       }
     ]
   },
