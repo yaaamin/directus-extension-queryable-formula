@@ -7,7 +7,8 @@
   "keywords": [
     "directus",
     "directus-extension",
-    "directus-extension-bundle"
+    "directus-extension-bundle",
+    "directus-formula"
   ],
   "type": "module",
   "files": [
