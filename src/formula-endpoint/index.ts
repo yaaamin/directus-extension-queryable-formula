@@ -35,6 +35,7 @@ export default (router: any, context: EndpointExtensionContext) => {
         (_match: string, dottedRef: string) => {
           const val = record[dottedRef];
           if (val === null || val === undefined) return "null";
+          if (val instanceof Date) return JSON.stringify(val.toISOString().split("T")[0]);
           if (typeof val === "string") return JSON.stringify(val);
           return String(val);
         },
@@ -46,6 +47,7 @@ export default (router: any, context: EndpointExtensionContext) => {
         (_match: string, fieldName: string) => {
           const val = record[fieldName];
           if (val === null || val === undefined) return "null";
+          if (val instanceof Date) return JSON.stringify(val.toISOString().split("T")[0]);
           if (typeof val === "string") return JSON.stringify(val);
           return String(val);
         },

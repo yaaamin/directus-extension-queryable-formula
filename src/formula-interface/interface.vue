@@ -94,6 +94,7 @@ function computePreview(): string | number | null {
       (_match: string, fieldName: string) => {
         const val = currentValues[fieldName];
         if (val === null || val === undefined) return "null";
+        if (val instanceof Date) return JSON.stringify(val.toISOString().split("T")[0]);
         if (typeof val === "string") return `"${val}"`;
         return String(val);
       },
