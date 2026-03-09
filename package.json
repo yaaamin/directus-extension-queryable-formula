@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "Formula field that stores computed values in DB for querying",
   "icon": "extension",
+  "license": "MIT",
   "keywords": [
     "directus",
     "directus-extension",
