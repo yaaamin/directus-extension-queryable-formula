@@ -369,6 +369,318 @@ export default (
         JSON.stringify(new Date().toISOString()),
       );
 
+      // ── Date Creation ──────────────────────────────────
+
+      result = result.replace(/\bTODAY\(\)/gi, () => {
+        const now = new Date();
+        return JSON.stringify(now.toISOString().split("T")[0]);
+      });
+
+      result = result.replace(
+        /\bDATE\(([^()]*)\)/gi,
+        (_m: string, args: string) => {
+          const parts = splitArgs(args);
+          if (parts.length < 3) return "null";
+          const y = Number(safeEval(parts[0]!.trim()));
+          const mo = Number(safeEval(parts[1]!.trim()));
+          const dy = Number(safeEval(parts[2]!.trim()));
+          if (isNaN(y) || isNaN(mo) || isNaN(dy)) return "null";
+          const dt = new Date(y, mo - 1, dy);
+          return JSON.stringify(dt.toISOString().split("T")[0]);
+        },
+      );
+
+      result = result.replace(
+        /\bDATEVALUE\(([^()]*)\)/gi,
+        (_m: string, arg: string) => {
+          const d = parseDateValue(safeEval(arg.trim()));
+          if (!d) return "null";
+          return JSON.stringify(d.toISOString().split("T")[0]);
+        },
+      );
+
+      result = result.replace(
+        /\bTIME\(([^()]*)\)/gi,
+        (_m: string, args: string) => {
+          const parts = splitArgs(args);
+          if (parts.length < 3) return "null";
+          const h = Number(safeEval(parts[0]!.trim()));
+          const mi = Number(safeEval(parts[1]!.trim()));
+          const sc = Number(safeEval(parts[2]!.trim()));
+          if (isNaN(h) || isNaN(mi) || isNaN(sc)) return "null";
+          return JSON.stringify(
+            `${String(h).padStart(2, "0")}:${String(mi).padStart(2, "0")}:${String(sc).padStart(2, "0")}`,
+          );
+        },
+      );
+
+      result = result.replace(
+        /\bTIMEVALUE\(([^()]*)\)/gi,
+        (_m: string, arg: string) => {
+          const d = parseDateValue(safeEval(arg.trim()));
+          if (!d) return "null";
+          return JSON.stringify(
+            d.toISOString().split("T")[1]!.split(".")[0],
+          );
+        },
+      );
+
+      // ── Date Extraction ────────────────────────────────
+
+      result = result.replace(
+        /\bYEAR\(([^()]*)\)/gi,
+        (_m: string, arg: string) => {
+          const d = parseDateValue(safeEval(arg.trim()));
+          return d ? String(d.getFullYear()) : "null";
+        },
+      );
+
+      result = result.replace(
+        /\bMONTH\(([^()]*)\)/gi,
+        (_m: string, arg: string) => {
+          const d = parseDateValue(safeEval(arg.trim()));
+          return d ? String(d.getMonth() + 1) : "null";
+        },
+      );
+
+      result = result.replace(
+        /\bDAY\(([^()]*)\)/gi,
+        (_m: string, arg: string) => {
+          const d = parseDateValue(safeEval(arg.trim()));
+          return d ? String(d.getDate()) : "null";
+        },
+      );
+
+      result = result.replace(
+        /\bHOUR\(([^()]*)\)/gi,
+        (_m: string, arg: string) => {
+          const d = parseDateValue(safeEval(arg.trim()));
+          return d ? String(d.getHours()) : "null";
+        },
+      );
+
+      result = result.replace(
+        /\bMINUTE\(([^()]*)\)/gi,
+        (_m: string, arg: string) => {
+          const d = parseDateValue(safeEval(arg.trim()));
+          return d ? String(d.getMinutes()) : "null";
+        },
+      );
+
+      result = result.replace(
+        /\bSECOND\(([^()]*)\)/gi,
+        (_m: string, arg: string) => {
+          const d = parseDateValue(safeEval(arg.trim()));
+          return d ? String(d.getSeconds()) : "null";
+        },
+      );
+
+      result = result.replace(
+        /\bWEEKDAY\(([^()]*)\)/gi,
+        (_m: string, args: string) => {
+          const parts = splitArgs(args);
+          const d = parseDateValue(safeEval(parts[0]!.trim()));
+          if (!d) return "null";
+          const type = parts[1]
+            ? Number(safeEval(parts[1].trim()))
+            : 1;
+          const jsDay = d.getDay(); // 0=Sun, 6=Sat
+          if (type === 2) return String(jsDay === 0 ? 7 : jsDay);
+          if (type === 3)
+            return String(jsDay === 0 ? 6 : jsDay - 1);
+          return String(jsDay + 1); // type 1: Sun=1..Sat=7
+        },
+      );
+
+      result = result.replace(
+        /\bISOWEEKNUM\(([^()]*)\)/gi,
+        (_m: string, arg: string) => {
+          const d = parseDateValue(safeEval(arg.trim()));
+          if (!d) return "null";
+          const target = new Date(d.getTime());
+          target.setHours(0, 0, 0, 0);
+          target.setDate(
+            target.getDate() + 3 - ((target.getDay() + 6) % 7),
+          );
+          const jan4 = new Date(target.getFullYear(), 0, 4);
+          return String(
+            1 +
+              Math.round(
+                ((target.getTime() - jan4.getTime()) / 86400000 -
+                  3 +
+                  ((jan4.getDay() + 6) % 7)) /
+                  7,
+              ),
+          );
+        },
+      );
+
+      result = result.replace(
+        /\bWEEKNUM\(([^()]*)\)/gi,
+        (_m: string, args: string) => {
+          const parts = splitArgs(args);
+          const d = parseDateValue(safeEval(parts[0]!.trim()));
+          if (!d) return "null";
+          const type = parts[1]
+            ? Number(safeEval(parts[1].trim()))
+            : 1;
+          const startOfYear = new Date(d.getFullYear(), 0, 1);
+          const diffMs = d.getTime() - startOfYear.getTime();
+          const diffDays = Math.floor(diffMs / 86400000);
+          const startDay =
+            type === 2
+              ? (startOfYear.getDay() + 6) % 7
+              : startOfYear.getDay();
+          return String(
+            Math.ceil((diffDays + startDay + 1) / 7),
+          );
+        },
+      );
+
+      // ── Date Arithmetic ────────────────────────────────
+
+      result = result.replace(
+        /\bDATEDIF\(([^()]*)\)/gi,
+        (_m: string, args: string) => {
+          const parts = splitArgs(args);
+          if (parts.length < 3) return "null";
+          const start = parseDateValue(safeEval(parts[0]!.trim()));
+          const end = parseDateValue(safeEval(parts[1]!.trim()));
+          if (!start || !end) return "null";
+          const unit = String(
+            safeEval(parts[2]!.trim()),
+          ).toUpperCase();
+          if (unit === "D") {
+            return String(
+              Math.floor(
+                (end.getTime() - start.getTime()) / 86400000,
+              ),
+            );
+          }
+          if (unit === "M") {
+            return String(
+              (end.getFullYear() - start.getFullYear()) * 12 +
+                (end.getMonth() - start.getMonth()),
+            );
+          }
+          if (unit === "Y") {
+            let years =
+              end.getFullYear() - start.getFullYear();
+            if (
+              end.getMonth() < start.getMonth() ||
+              (end.getMonth() === start.getMonth() &&
+                end.getDate() < start.getDate())
+            ) {
+              years--;
+            }
+            return String(years);
+          }
+          if (unit === "YM") {
+            let months =
+              end.getMonth() - start.getMonth();
+            if (end.getDate() < start.getDate()) months--;
+            if (months < 0) months += 12;
+            return String(months);
+          }
+          if (unit === "MD") {
+            let days = end.getDate() - start.getDate();
+            if (days < 0) {
+              const prevMonth = new Date(
+                end.getFullYear(),
+                end.getMonth(),
+                0,
+              );
+              days += prevMonth.getDate();
+            }
+            return String(days);
+          }
+          if (unit === "YD") {
+            const adjStart = new Date(
+              end.getFullYear(),
+              start.getMonth(),
+              start.getDate(),
+            );
+            let diff = Math.floor(
+              (end.getTime() - adjStart.getTime()) / 86400000,
+            );
+            if (diff < 0) diff += 365;
+            return String(diff);
+          }
+          return "null";
+        },
+      );
+
+      result = result.replace(
+        /\bDAYS\(([^()]*)\)/gi,
+        (_m: string, args: string) => {
+          const parts = splitArgs(args);
+          if (parts.length < 2) return "null";
+          const endD = parseDateValue(
+            safeEval(parts[0]!.trim()),
+          );
+          const startD = parseDateValue(
+            safeEval(parts[1]!.trim()),
+          );
+          if (!endD || !startD) return "null";
+          return String(
+            Math.floor(
+              (endD.getTime() - startD.getTime()) / 86400000,
+            ),
+          );
+        },
+      );
+
+      result = result.replace(
+        /\bEDATE\(([^()]*)\)/gi,
+        (_m: string, args: string) => {
+          const parts = splitArgs(args);
+          if (parts.length < 2) return "null";
+          const d = parseDateValue(safeEval(parts[0]!.trim()));
+          if (!d) return "null";
+          const months = Number(safeEval(parts[1]!.trim()));
+          if (isNaN(months)) return "null";
+          const nd = new Date(d);
+          nd.setMonth(nd.getMonth() + months);
+          return JSON.stringify(nd.toISOString().split("T")[0]);
+        },
+      );
+
+      result = result.replace(
+        /\bEOMONTH\(([^()]*)\)/gi,
+        (_m: string, args: string) => {
+          const parts = splitArgs(args);
+          if (parts.length < 2) return "null";
+          const d = parseDateValue(safeEval(parts[0]!.trim()));
+          if (!d) return "null";
+          const months = Number(safeEval(parts[1]!.trim()));
+          if (isNaN(months)) return "null";
+          const eom = new Date(
+            d.getFullYear(),
+            d.getMonth() + months + 1,
+            0,
+          );
+          return JSON.stringify(
+            eom.toISOString().split("T")[0],
+          );
+        },
+      );
+
+      result = result.replace(
+        /\bNETWORKDAYS\(([^()]*)\)/gi,
+        (_m: string, args: string) => {
+          const parts = splitArgs(args);
+          if (parts.length < 2) return "null";
+          const startD = parseDateValue(
+            safeEval(parts[0]!.trim()),
+          );
+          const endD = parseDateValue(
+            safeEval(parts[1]!.trim()),
+          );
+          if (!startD || !endD) return "null";
+          return String(countNetworkDays(startD, endD));
+        },
+      );
+
       if (result === previous) break;
     }
 
@@ -434,6 +746,35 @@ export default (
     }
 
     return trimmed;
+  }
+
+  // ─── Date helpers (used by date functions) ──────────────
+
+  function parseDateValue(val: any): Date | null {
+    if (val === null || val === undefined || val === "null") return null;
+    const s = typeof val === "string" ? val : String(val);
+    if (!s || s === "null") return null;
+    const d = new Date(s);
+    return isNaN(d.getTime()) ? null : d;
+  }
+
+  function countNetworkDays(startDate: Date, endDate: Date): number {
+    const s = new Date(startDate);
+    s.setHours(0, 0, 0, 0);
+    const e = new Date(endDate);
+    e.setHours(0, 0, 0, 0);
+    if (s > e) return -countNetworkDays(e, s);
+    const totalDays =
+      Math.round((e.getTime() - s.getTime()) / 86400000) + 1;
+    const fullWeeks = Math.floor(totalDays / 7);
+    const remainder = totalDays % 7;
+    let workDays = fullWeeks * 5;
+    const startDay = s.getDay();
+    for (let i = 0; i < remainder; i++) {
+      const dow = (startDay + i) % 7;
+      if (dow !== 0 && dow !== 6) workDays++;
+    }
+    return workDays;
   }
 
   // ─── Schema helpers ───────────────────────────────────────

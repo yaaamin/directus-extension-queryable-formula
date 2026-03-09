@@ -381,6 +381,25 @@ const KNOWN_FUNCTIONS = new Set([
   "IF",
   "COALESCE",
   "NOW",
+  "TODAY",
+  "DATE",
+  "DATEVALUE",
+  "TIME",
+  "TIMEVALUE",
+  "YEAR",
+  "MONTH",
+  "DAY",
+  "HOUR",
+  "MINUTE",
+  "SECOND",
+  "WEEKDAY",
+  "WEEKNUM",
+  "ISOWEEKNUM",
+  "DATEDIF",
+  "DAYS",
+  "EDATE",
+  "EOMONTH",
+  "NETWORKDAYS",
 ]);
 
 interface FnDef {
@@ -460,13 +479,120 @@ const functionGroups: FnGroup[] = [
     ],
   },
   {
-    label: "Date",
+    label: "Date — Creation",
     icon: "schedule",
     fns: [
       {
         name: "NOW",
         snippet: "NOW()",
         hint: "NOW() — Current ISO timestamp",
+      },
+      {
+        name: "TODAY",
+        snippet: "TODAY()",
+        hint: "TODAY() — Current date (YYYY-MM-DD)",
+      },
+      {
+        name: "DATE",
+        snippet: "DATE(|, , )",
+        hint: "DATE(year, month, day) — Create a date",
+      },
+      {
+        name: "DATEVALUE",
+        snippet: "DATEVALUE(|)",
+        hint: "DATEVALUE(date_string) — Parse string to ISO date",
+      },
+      {
+        name: "TIME",
+        snippet: "TIME(|, , )",
+        hint: "TIME(hour, minute, second) — Create a time string",
+      },
+      {
+        name: "TIMEVALUE",
+        snippet: "TIMEVALUE(|)",
+        hint: "TIMEVALUE(datetime) — Extract time part from datetime",
+      },
+    ],
+  },
+  {
+    label: "Date — Extraction",
+    icon: "event",
+    fns: [
+      {
+        name: "YEAR",
+        snippet: "YEAR(|)",
+        hint: "YEAR(date) — Extract year",
+      },
+      {
+        name: "MONTH",
+        snippet: "MONTH(|)",
+        hint: "MONTH(date) — Extract month (1–12)",
+      },
+      {
+        name: "DAY",
+        snippet: "DAY(|)",
+        hint: "DAY(date) — Extract day of month (1–31)",
+      },
+      {
+        name: "HOUR",
+        snippet: "HOUR(|)",
+        hint: "HOUR(datetime) — Extract hour (0–23)",
+      },
+      {
+        name: "MINUTE",
+        snippet: "MINUTE(|)",
+        hint: "MINUTE(datetime) — Extract minute (0–59)",
+      },
+      {
+        name: "SECOND",
+        snippet: "SECOND(|)",
+        hint: "SECOND(datetime) — Extract second (0–59)",
+      },
+      {
+        name: "WEEKDAY",
+        snippet: "WEEKDAY(|)",
+        hint: "WEEKDAY(date [, type]) — Day of week (1=Sun default)",
+      },
+      {
+        name: "WEEKNUM",
+        snippet: "WEEKNUM(|)",
+        hint: "WEEKNUM(date [, type]) — Week number of the year",
+      },
+      {
+        name: "ISOWEEKNUM",
+        snippet: "ISOWEEKNUM(|)",
+        hint: "ISOWEEKNUM(date) — ISO 8601 week number",
+      },
+    ],
+  },
+  {
+    label: "Date — Arithmetic",
+    icon: "date_range",
+    fns: [
+      {
+        name: "DATEDIF",
+        snippet: 'DATEDIF(|, , "D")',
+        hint: 'DATEDIF(start, end, unit) — Difference (unit: "Y","M","D","YM","MD","YD")',
+      },
+      {
+        name: "DAYS",
+        snippet: "DAYS(|, )",
+        hint: "DAYS(end, start) — Number of days between two dates",
+      },
+      {
+        name: "EDATE",
+        snippet: "EDATE(|, )",
+        hint: "EDATE(start, months) — Date offset by N months",
+      },
+      {
+        name: "EOMONTH",
+        snippet: "EOMONTH(|, )",
+        hint: "EOMONTH(start, months) — End of month offset by N months",
+      },
+      {
+        name: "NETWORKDAYS",
+        snippet: "NETWORKDAYS(|, )",
+        hint: "NETWORKDAYS(start, end) — Working days between two dates",
       },
     ],
   },

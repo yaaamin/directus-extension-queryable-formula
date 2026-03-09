@@ -115,9 +115,94 @@ If `nickname` is null but `first_name` is "John" → returns `"John"`.
 
 ## Date Functions
 
-| Function | Description           | Example | Result                       |
-| -------- | --------------------- | ------- | ---------------------------- |
-| `NOW()`  | Current ISO timestamp | `NOW()` | `"2026-09-03T10:00:00.000Z"` |
+### Date Creation
+
+| Function                      | Description                         | Example                           | Result                         |
+| ----------------------------- | ----------------------------------- | --------------------------------- | ------------------------------ |
+| `NOW()`                       | Current ISO timestamp               | `NOW()`                           | `"2026-09-03T10:00:00.000Z"`  |
+| `TODAY()`                     | Current date (no time)              | `TODAY()`                         | `"2026-09-03"`                 |
+| `DATE(year, month, day)`      | Create a date from components       | `DATE(2026, 3, 15)`              | `"2026-03-15"`                 |
+| `DATEVALUE(date_string)`      | Parse a date string to ISO date     | `DATEVALUE({{created_at}})`      | `"2026-01-20"`                 |
+| `TIME(hour, minute, second)`  | Create a time string (HH:MM:SS)    | `TIME(14, 30, 0)`               | `"14:30:00"`                   |
+| `TIMEVALUE(datetime_string)`  | Extract time part from a datetime   | `TIMEVALUE({{created_at}})`      | `"10:00:00"`                   |
+
+### Date Extraction
+
+| Function                  | Description                                 | Example                              | Result |
+| ------------------------- | ------------------------------------------- | ------------------------------------ | ------ |
+| `YEAR(date)`              | Extract the year                            | `YEAR({{created_at}})`               | `2026` |
+| `MONTH(date)`             | Extract the month (1–12)                    | `MONTH({{created_at}})`              | `3`    |
+| `DAY(date)`               | Extract the day of the month (1–31)         | `DAY({{created_at}})`                | `15`   |
+| `HOUR(datetime)`          | Extract the hour (0–23)                     | `HOUR({{created_at}})`               | `14`   |
+| `MINUTE(datetime)`        | Extract the minute (0–59)                   | `MINUTE({{created_at}})`             | `30`   |
+| `SECOND(datetime)`        | Extract the second (0–59)                   | `SECOND({{created_at}})`             | `0`    |
+| `WEEKDAY(date [, type])`  | Day of the week                             | `WEEKDAY({{created_at}})`            | `1`    |
+| `WEEKNUM(date [, type])`  | Week number in the year                     | `WEEKNUM({{created_at}})`            | `12`   |
+| `ISOWEEKNUM(date)`        | ISO 8601 week number                        | `ISOWEEKNUM({{created_at}})`         | `11`   |
+
+**WEEKDAY types:**
+
+| Type | Scheme              |
+| ---- | ------------------- |
+| `1`  | Sunday = 1 … Saturday = 7 (default) |
+| `2`  | Monday = 1 … Sunday = 7  |
+| `3`  | Monday = 0 … Sunday = 6  |
+
+**WEEKNUM types:**
+
+| Type | Week starts on |
+| ---- | -------------- |
+| `1`  | Sunday (default) |
+| `2`  | Monday           |
+
+### Date Arithmetic
+
+| Function                          | Description                                     | Example                                                    | Result         |
+| --------------------------------- | ----------------------------------------------- | ---------------------------------------------------------- | -------------- |
+| `DATEDIF(start, end, unit)`       | Difference between two dates                    | `DATEDIF({{start_date}}, {{end_date}}, "D")`               | `90`           |
+| `DAYS(end, start)`                | Number of days between two dates                | `DAYS({{end_date}}, {{start_date}})`                        | `30`           |
+| `EDATE(start, months)`            | Date offset by N months                         | `EDATE({{start_date}}, 3)`                                 | `"2026-06-15"` |
+| `EOMONTH(start, months)`          | Last day of the month, offset by N months       | `EOMONTH({{start_date}}, 1)`                               | `"2026-04-30"` |
+| `NETWORKDAYS(start, end)`         | Number of working days (excl. weekends)         | `NETWORKDAYS({{start_date}}, {{end_date}})`                 | `22`           |
+
+**DATEDIF units:**
+
+| Unit  | Returns                                |
+| ----- | -------------------------------------- |
+| `"Y"` | Complete years between dates           |
+| `"M"` | Complete months between dates          |
+| `"D"` | Days between dates                     |
+| `"YM"`| Months, excluding years                |
+| `"MD"`| Days, excluding months and years       |
+| `"YD"`| Days, excluding years                  |
+
+Nesting works with date functions too:
+
+```text
+CONCAT("Created in ", YEAR({{created_at}}))
+→ "Created in 2026"
+
+DATEDIF({{hired_date}}, NOW(), "Y")
+→ 3  (years of service)
+
+IF(DAYS(NOW(), {{due_date}}) > 0, "Overdue", "On track")
+→ "Overdue"
+
+CONCAT(YEAR({{date}}), "-Q", CEIL(MONTH({{date}}) / 3))
+→ "2026-Q1"
+
+IF(WEEKDAY({{event_date}}, 2) > 5, "Weekend", "Weekday")
+→ "Weekday"
+
+CONCAT("Due: ", EDATE({{start_date}}, 6))
+→ "Due: 2027-03-15"
+
+EOMONTH({{invoice_date}}, 0)
+→ "2026-03-31"  (last day of the invoice's month)
+
+NETWORKDAYS({{project_start}}, {{project_end}})
+→ 65  (working days in project)
+```
 
 ---
 
@@ -294,5 +379,5 @@ These are **not** currently implemented:
 | Aggregations                           | No `SUM()` / `AVG()` across related items                 |
 | `LENGTH()`, `SUBSTRING()`, `REPLACE()` | String manipulation beyond CONCAT/UPPER/LOWER/TRIM        |
 | `MIN()`, `MAX()`, `ABS()`, `POWER()`   | Extended math                                             |
-| `DATE_DIFF()`, `DATE_ADD()`            | Date arithmetic                                           |
 | Regex                                  | No pattern matching                                       |
+| Holiday-aware `NETWORKDAYS`            | Holidays parameter not supported — weekends only          |
