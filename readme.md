@@ -1,4 +1,10 @@
-Here's the complete reference of everything available in the formula engine we built:
+# Queryable Formula — Directus Extension
+
+A computed field extension for Directus that stores formula results in the database, making them queryable, sortable, and filterable. Includes a visual formula builder, relational field lookups, scheduled recalculation, and a force-recalculate button.
+
+---
+
+Here's the complete reference of everything available in the formula engine:
 
 ---
 
@@ -109,9 +115,94 @@ If `nickname` is null but `first_name` is "John" → returns `"John"`.
 
 ## Date Functions
 
-| Function | Description           | Example | Result                       |
-| -------- | --------------------- | ------- | ---------------------------- |
-| `NOW()`  | Current ISO timestamp | `NOW()` | `"2026-09-03T10:00:00.000Z"` |
+### Date Creation
+
+| Function                     | Description                       | Example                     | Result                       |
+| ---------------------------- | --------------------------------- | --------------------------- | ---------------------------- |
+| `NOW()`                      | Current ISO timestamp             | `NOW()`                     | `"2026-09-03T10:00:00.000Z"` |
+| `TODAY()`                    | Current date (no time)            | `TODAY()`                   | `"2026-09-03"`               |
+| `DATE(year, month, day)`     | Create a date from components     | `DATE(2026, 3, 15)`         | `"2026-03-15"`               |
+| `DATEVALUE(date_string)`     | Parse a date string to ISO date   | `DATEVALUE({{created_at}})` | `"2026-01-20"`               |
+| `TIME(hour, minute, second)` | Create a time string (HH:MM:SS)   | `TIME(14, 30, 0)`           | `"14:30:00"`                 |
+| `TIMEVALUE(datetime_string)` | Extract time part from a datetime | `TIMEVALUE({{created_at}})` | `"10:00:00"`                 |
+
+### Date Extraction
+
+| Function                 | Description                         | Example                      | Result |
+| ------------------------ | ----------------------------------- | ---------------------------- | ------ |
+| `YEAR(date)`             | Extract the year                    | `YEAR({{created_at}})`       | `2026` |
+| `MONTH(date)`            | Extract the month (1–12)            | `MONTH({{created_at}})`      | `3`    |
+| `DAY(date)`              | Extract the day of the month (1–31) | `DAY({{created_at}})`        | `15`   |
+| `HOUR(datetime)`         | Extract the hour (0–23)             | `HOUR({{created_at}})`       | `14`   |
+| `MINUTE(datetime)`       | Extract the minute (0–59)           | `MINUTE({{created_at}})`     | `30`   |
+| `SECOND(datetime)`       | Extract the second (0–59)           | `SECOND({{created_at}})`     | `0`    |
+| `WEEKDAY(date [, type])` | Day of the week                     | `WEEKDAY({{created_at}})`    | `1`    |
+| `WEEKNUM(date [, type])` | Week number in the year             | `WEEKNUM({{created_at}})`    | `12`   |
+| `ISOWEEKNUM(date)`       | ISO 8601 week number                | `ISOWEEKNUM({{created_at}})` | `11`   |
+
+**WEEKDAY types:**
+
+| Type | Scheme                              |
+| ---- | ----------------------------------- |
+| `1`  | Sunday = 1 … Saturday = 7 (default) |
+| `2`  | Monday = 1 … Sunday = 7             |
+| `3`  | Monday = 0 … Sunday = 6             |
+
+**WEEKNUM types:**
+
+| Type | Week starts on   |
+| ---- | ---------------- |
+| `1`  | Sunday (default) |
+| `2`  | Monday           |
+
+### Date Arithmetic
+
+| Function                    | Description                               | Example                                      | Result         |
+| --------------------------- | ----------------------------------------- | -------------------------------------------- | -------------- |
+| `DATEDIF(start, end, unit)` | Difference between two dates              | `DATEDIF({{start_date}}, {{end_date}}, "D")` | `90`           |
+| `DAYS(end, start)`          | Number of days between two dates          | `DAYS({{end_date}}, {{start_date}})`         | `30`           |
+| `EDATE(start, months)`      | Date offset by N months                   | `EDATE({{start_date}}, 3)`                   | `"2026-06-15"` |
+| `EOMONTH(start, months)`    | Last day of the month, offset by N months | `EOMONTH({{start_date}}, 1)`                 | `"2026-04-30"` |
+| `NETWORKDAYS(start, end)`   | Number of working days (excl. weekends)   | `NETWORKDAYS({{start_date}}, {{end_date}})`  | `22`           |
+
+**DATEDIF units:**
+
+| Unit   | Returns                          |
+| ------ | -------------------------------- |
+| `"Y"`  | Complete years between dates     |
+| `"M"`  | Complete months between dates    |
+| `"D"`  | Days between dates               |
+| `"YM"` | Months, excluding years          |
+| `"MD"` | Days, excluding months and years |
+| `"YD"` | Days, excluding years            |
+
+Nesting works with date functions too:
+
+```text
+CONCAT("Created in ", YEAR({{created_at}}))
+→ "Created in 2026"
+
+DATEDIF({{hired_date}}, NOW(), "Y")
+→ 3  (years of service)
+
+IF(DAYS(NOW(), {{due_date}}) > 0, "Overdue", "On track")
+→ "Overdue"
+
+CONCAT(YEAR({{date}}), "-Q", CEIL(MONTH({{date}}) / 3))
+→ "2026-Q1"
+
+IF(WEEKDAY({{event_date}}, 2) > 5, "Weekend", "Weekday")
+→ "Weekday"
+
+CONCAT("Due: ", EDATE({{start_date}}, 6))
+→ "Due: 2027-03-15"
+
+EOMONTH({{invoice_date}}, 0)
+→ "2026-03-31"  (last day of the invoice's month)
+
+NETWORKDAYS({{project_start}}, {{project_end}})
+→ 65  (working days in project)
+```
 
 ---
 
@@ -128,6 +219,8 @@ If `nickname` is null but `first_name` is "John" → returns `"John"`.
 
 ## Field References
 
+### Local Fields
+
 Use `{{field_name}}` to reference any field **on the same item**:
 
 ```text
@@ -136,6 +229,40 @@ Use `{{field_name}}` to reference any field **on the same item**:
 {{is_active}}       → boolean field
 {{created_date}}    → date field (treated as string)
 ```
+
+### Relational Fields (M2O Lookups)
+
+Use `{{relation.field}}` to pull a value from a **related item** via a Many-to-One relationship. The engine automatically resolves the foreign key, finds the related table and primary key via the Directus schema, and fetches the value.
+
+```text
+{{category.name}}       → string field from the related "categories" table
+{{author.email}}        → string field from the related "users" table
+{{supplier.country}}    → string field from the related "suppliers" table
+```
+
+How it works:
+
+1. `category` is the **local FK field** on the current item (stores a foreign key like `3`)
+2. `.name` is the **field on the related table** to read
+3. The engine looks up the relation in the Directus schema, queries the related table for the record matching the FK, and returns the `name` column
+
+You can use relational refs anywhere you'd use a normal field:
+
+```text
+CONCAT({{name}}, " — ", {{category.name}})
+→ "Widget Pro — Electronics"
+
+IF({{category.type}} == "premium", {{price}} * 1.2, {{price}})
+→ applies a 20% markup for premium categories
+
+CONCAT({{author.first_name}}, " ", {{author.last_name}})
+→ "Jane Smith"
+
+UPPER({{supplier.country}})
+→ "GERMANY"
+```
+
+> **Note:** Only M2O (Many-to-One) relations are supported. You can traverse one level deep — `{{relation.field}}` — but not nested relations like `{{relation.other_relation.field}}`.
 
 ---
 
@@ -185,17 +312,72 @@ CONCAT(ROUND({{completed}} / {{total}} * 100, 1), "%")
 COALESCE({{display_name}}, CONCAT({{first_name}}, " ", {{last_name}}), {{email}}, "Anonymous")
 ```
 
+**Product with category label (relational):**
+
+```text
+CONCAT({{name}}, " [", UPPER({{category.name}}), "]")
+→ "Widget Pro [ELECTRONICS]"
+```
+
+**Order total with tax rate from related region:**
+
+```text
+ROUND({{subtotal}} * (1 + {{region.tax_rate}} / 100), 2)
+→ 107.50 (if subtotal=100, region.tax_rate=7.5)
+```
+
+**Author display name with fallback:**
+
+```text
+COALESCE({{author.display_name}}, CONCAT({{author.first_name}}, " ", {{author.last_name}}), "Unknown Author")
+```
+
+---
+
+## Force Recalculate
+
+Each formula field includes a **"Recalculate All"** button on the item detail page. Clicking it triggers a full recalculation of every row in the collection for that field via a REST API call.
+
+- **Endpoint:** `POST /queryable-formula/recalculate`
+- **Body:** `{ "collection": "products", "field": "total_price" }` (field is optional — omit to recalculate all formula fields in the collection)
+- **Auth:** Admin access required
+- **Response:** `{ "updated": 42, "collection": "products", "field": "total_price" }`
+
+You can also check which formula fields exist:
+
+- **Endpoint:** `GET /queryable-formula/status`
+- **Response:** `{ "fields": [{ "collection": "products", "field": "total_price", "formula": "...", "cronSchedule": "*/15 * * * *" }] }`
+
+---
+
+## Scheduled Recalculation (CRON)
+
+You can configure a **cron schedule** per formula field to automatically recalculate all values at a regular interval. This is useful for formulas that reference `NOW()` or relational data that may change without triggering a direct update.
+
+Set the cron expression in the field configuration panel under **"Scheduled Recalculation"**. Preset buttons are provided for common intervals:
+
+| Preset         | Cron Expression | Interval   |
+| -------------- | --------------- | ---------- |
+| Every 5 min    | `*/5 * * * *`   | 5 minutes  |
+| Every 15 min   | `*/15 * * * *`  | 15 minutes |
+| Hourly         | `0 * * * *`     | 1 hour     |
+| Daily midnight | `0 0 * * *`     | 24 hours   |
+| Weekly (Sun)   | `0 0 * * 0`     | 7 days     |
+
+Leave the field empty to disable scheduling. Schedules are picked up on server startup and refresh automatically when you create or update a formula field.
+
 ---
 
 ## What's NOT Supported
 
 These are **not** currently implemented:
 
-| Feature                                | Notes                                                |
-| -------------------------------------- | ---------------------------------------------------- |
-| Relational lookups                     | Can't do `{{category.name}}` — only same-item fields |
-| Aggregations                           | No `SUM()` / `AVG()` across related items            |
-| `LENGTH()`, `SUBSTRING()`, `REPLACE()` | String manipulation beyond CONCAT/UPPER/LOWER/TRIM   |
-| `MIN()`, `MAX()`, `ABS()`, `POWER()`   | Extended math                                        |
-| `DATE_DIFF()`, `DATE_ADD()`            | Date arithmetic                                      |
-| Regex                                  | No pattern matching                                  |
+| Feature                                | Notes                                                     |
+| -------------------------------------- | --------------------------------------------------------- |
+| Nested relational lookups              | Can't do `{{category.parent.name}}` — only one level deep |
+| O2M / M2M relational lookups           | Only M2O (Many-to-One) relations are supported            |
+| Aggregations                           | No `SUM()` / `AVG()` across related items                 |
+| `LENGTH()`, `SUBSTRING()`, `REPLACE()` | String manipulation beyond CONCAT/UPPER/LOWER/TRIM        |
+| `MIN()`, `MAX()`, `ABS()`, `POWER()`   | Extended math                                             |
+| Regex                                  | No pattern matching                                       |
+| Holiday-aware `NETWORKDAYS`            | Holidays parameter not supported — weekends only          |

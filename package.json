@@ -14,9 +14,11 @@
   "files": [
     "dist"
   ],
+  "sandboxed": true,
   "directus:extension": {
     "type": "bundle",
     "partial": false,
+    "sandboxed": true,
     "host": "^11.0.0",
     "path": {
       "app": "dist/app.js",
