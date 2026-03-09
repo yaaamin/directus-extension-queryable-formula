@@ -1,0 +1,1094 @@
+import type { HookExtensionContext } from "@directus/extensions";
+
+export default (
+  { filter, action, init }: { filter: any; action: any; init: any },
+  context: HookExtensionContext,
+) => {
+  const { database, logger, getSchema } = context;
+
+  const BATCH_SIZE = 200;
+  const INTERFACE_ID = "queryable-formula";
+
+  // Track backfill state to avoid duplicate runs
+  let backfillRunning = false;
+
+  // Track CRON timers for scheduled recalculation
+  const cronTimers = new Map<string, ReturnType<typeof setInterval>>();
+
+  // ─── Helpers ──────────────────────────────────────────────
+
+  function extractFieldRefs(formula: string): string[] {
+    const matches = formula.match(/\{\{([\w.]+)\}\}/g) || [];
+    const refs = matches.map((m) => m.replace(/\{\{|\}\}/g, ""));
+    // For dotted refs like "category.name", include the local FK column ("category")
+    const localFields = refs.map((r) =>
+      r.includes(".") ? r.split(".")[0]! : r,
+    );
+    return [...new Set(localFields)];
+  }
+
+  /**
+   * Extract all unique dotted (relational) refs from a formula.
+   * e.g. "{{category.name}} - {{author.email}}" → ["category.name", "author.email"]
+   */
+  function extractRelationalRefs(formula: string): string[] {
+    const matches = formula.match(/\{\{([\w]+\.[\w]+)\}\}/g) || [];
+    return [...new Set(matches.map((m) => m.replace(/\{\{|\}\}/g, "")))];
+  }
+
+  function evaluateFormula(
+    formula: string,
+    record: Record<string, any>,
+  ): string | number | null {
+    try {
+      let expression = formula;
+
+      // Replace dotted refs first (e.g. {{category.name}})
+      expression = expression.replace(
+        /\{\{([\w]+\.[\w]+)\}\}/g,
+        (_match: string, dottedRef: string) => {
+          const val = record[dottedRef];
+          if (val === null || val === undefined) return "null";
+          if (typeof val === "string") return JSON.stringify(val);
+          return String(val);
+        },
+      );
+
+      // Then replace simple refs (e.g. {{price}})
+      expression = expression.replace(
+        /\{\{(\w+)\}\}/g,
+        (_match: string, fieldName: string) => {
+          const val = record[fieldName];
+          if (val === null || val === undefined) return "null";
+          if (typeof val === "string") return JSON.stringify(val);
+          return String(val);
+        },
+      );
+
+      expression = processFunctions(expression);
+      return safeEval(expression);
+    } catch (err: any) {
+      logger.warn(
+        `[queryable-formula] Failed to evaluate formula "${formula}": ${err.message}`,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Resolve relational (dotted) field references for a single record.
+   * Given refs like ["category.name", "author.email"], fetches the related
+   * records and returns a flat map: { "category.name": "Electronics", "author.email": "a@b.com" }
+   */
+  async function resolveRelationalData(
+    collection: string,
+    record: Record<string, any>,
+    relationalRefs: string[],
+    db?: any,
+  ): Promise<Record<string, any>> {
+    if (relationalRefs.length === 0) return {};
+
+    const knex = db || database;
+    const resolved: Record<string, any> = {};
+
+    try {
+      const schema = await getSchema();
+      const collectionRelations = schema.relations || [];
+
+      // Group refs by local field: { category: ["name"], author: ["email", "name"] }
+      const refsByLocal = new Map<string, string[]>();
+      for (const ref of relationalRefs) {
+        const [localField, remoteField] = ref.split(".");
+        if (!localField || !remoteField) continue;
+        const existing = refsByLocal.get(localField) || [];
+        existing.push(remoteField);
+        refsByLocal.set(localField, existing);
+      }
+
+      for (const [localField, remoteFields] of refsByLocal) {
+        const fkValue = record[localField];
+        if (fkValue === null || fkValue === undefined) {
+          // Set all dotted refs to null
+          for (const rf of remoteFields) {
+            resolved[`${localField}.${rf}`] = null;
+          }
+          continue;
+        }
+
+        // Find the M2O relation for this field
+        const relation = collectionRelations.find(
+          (r: any) => r.collection === collection && r.field === localField,
+        );
+
+        if (!relation || !relation.related_collection) {
+          logger.debug(
+            `[queryable-formula] No M2O relation found for "${collection}.${localField}"`,
+          );
+          for (const rf of remoteFields) {
+            resolved[`${localField}.${rf}`] = null;
+          }
+          continue;
+        }
+
+        const relatedCollection = relation.related_collection;
+        const relatedSchema = schema.collections[relatedCollection];
+        const relatedPK = relatedSchema?.primary ?? "id";
+
+        try {
+          const relatedRow = await knex
+            .select(remoteFields)
+            .from(relatedCollection)
+            .where(relatedPK, fkValue)
+            .first();
+
+          for (const rf of remoteFields) {
+            resolved[`${localField}.${rf}`] = relatedRow
+              ? (relatedRow[rf] ?? null)
+              : null;
+          }
+        } catch (err: any) {
+          logger.debug(
+            `[queryable-formula] Failed to resolve ${localField}.* from "${relatedCollection}": ${err.message}`,
+          );
+          for (const rf of remoteFields) {
+            resolved[`${localField}.${rf}`] = null;
+          }
+        }
+      }
+    } catch (err: any) {
+      logger.warn(
+        `[queryable-formula] relational resolution error: ${err.message}`,
+      );
+    }
+
+    return resolved;
+  }
+
+  /**
+   * Batch-resolve relational data for many rows at once (avoids N+1 queries).
+   * Returns a Map keyed by row index → resolved dotted fields.
+   */
+  async function batchResolveRelationalData(
+    collection: string,
+    rows: Record<string, any>[],
+    relationalRefs: string[],
+    db?: any,
+  ): Promise<Map<number, Record<string, any>>> {
+    const result = new Map<number, Record<string, any>>();
+    if (relationalRefs.length === 0 || rows.length === 0) return result;
+
+    const knex = db || database;
+
+    try {
+      const schema = await getSchema();
+      const collectionRelations = schema.relations || [];
+
+      // Group: { category: ["name", "slug"], author: ["email"] }
+      const refsByLocal = new Map<string, string[]>();
+      for (const ref of relationalRefs) {
+        const [localField, remoteField] = ref.split(".");
+        if (!localField || !remoteField) continue;
+        const existing = refsByLocal.get(localField) || [];
+        existing.push(remoteField);
+        refsByLocal.set(localField, existing);
+      }
+
+      // For each relation, batch-fetch all unique FK values
+      const relationCache = new Map<string, Map<any, Record<string, any>>>();
+
+      for (const [localField, remoteFields] of refsByLocal) {
+        const relation = collectionRelations.find(
+          (r: any) => r.collection === collection && r.field === localField,
+        );
+
+        if (!relation || !relation.related_collection) continue;
+
+        const relatedCollection = relation.related_collection;
+        const relatedSchema = schema.collections[relatedCollection];
+        const relatedPK = relatedSchema?.primary ?? "id";
+
+        // Collect unique FK values
+        const fkValues = [
+          ...new Set(
+            rows
+              .map((r) => r[localField])
+              .filter((v) => v !== null && v !== undefined),
+          ),
+        ];
+
+        if (fkValues.length === 0) continue;
+
+        try {
+          const relatedRows = await knex
+            .select([relatedPK, ...remoteFields])
+            .from(relatedCollection)
+            .whereIn(relatedPK, fkValues);
+
+          const lookup = new Map<any, Record<string, any>>();
+          for (const rr of relatedRows) {
+            lookup.set(rr[relatedPK], rr);
+          }
+          relationCache.set(localField, lookup);
+        } catch (err: any) {
+          logger.debug(
+            `[queryable-formula] Batch fetch failed for "${relatedCollection}": ${err.message}`,
+          );
+        }
+      }
+
+      // Now map each row to its resolved values
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i]!;
+        const resolved: Record<string, any> = {};
+
+        for (const [localField, remoteFields] of refsByLocal) {
+          const fkValue = row[localField];
+          const lookup = relationCache.get(localField);
+          const relatedRow = fkValue != null ? lookup?.get(fkValue) : undefined;
+
+          for (const rf of remoteFields) {
+            resolved[`${localField}.${rf}`] = relatedRow
+              ? (relatedRow[rf] ?? null)
+              : null;
+          }
+        }
+
+        result.set(i, resolved);
+      }
+    } catch (err: any) {
+      logger.warn(
+        `[queryable-formula] batch relational resolution error: ${err.message}`,
+      );
+    }
+
+    return result;
+  }
+
+  function processFunctions(expr: string): string {
+    let result = expr;
+    let maxIterations = 50;
+
+    while (maxIterations-- > 0) {
+      const previous = result;
+
+      result = result.replace(
+        /CONCAT\(([^()]*)\)/gi,
+        (_m: string, args: string) => {
+          const parts = splitArgs(args);
+          const joined = parts
+            .map((p) => {
+              const trimmed = p.trim();
+              try {
+                return String(safeEval(trimmed));
+              } catch {
+                return trimmed.replace(/^"|"$/g, "");
+              }
+            })
+            .join("");
+          return JSON.stringify(joined);
+        },
+      );
+
+      result = result.replace(
+        /UPPER\(([^()]*)\)/gi,
+        (_m: string, arg: string) => {
+          const val = String(safeEval(arg.trim()));
+          return JSON.stringify(val.toUpperCase());
+        },
+      );
+
+      result = result.replace(
+        /LOWER\(([^()]*)\)/gi,
+        (_m: string, arg: string) => {
+          const val = String(safeEval(arg.trim()));
+          return JSON.stringify(val.toLowerCase());
+        },
+      );
+
+      result = result.replace(
+        /TRIM\(([^()]*)\)/gi,
+        (_m: string, arg: string) => {
+          const val = String(safeEval(arg.trim()));
+          return JSON.stringify(val.trim());
+        },
+      );
+
+      result = result.replace(
+        /ROUND\(([^()]*)\)/gi,
+        (_m: string, args: string) => {
+          const parts = splitArgs(args);
+          const num = Number(safeEval(parts[0]!.trim()));
+          const decimals = parts[1] ? Number(safeEval(parts[1].trim())) : 0;
+          return String(Math.round(num * 10 ** decimals) / 10 ** decimals);
+        },
+      );
+
+      result = result.replace(
+        /FLOOR\(([^()]*)\)/gi,
+        (_m: string, arg: string) => {
+          return String(Math.floor(Number(safeEval(arg.trim()))));
+        },
+      );
+
+      result = result.replace(
+        /CEIL\(([^()]*)\)/gi,
+        (_m: string, arg: string) => {
+          return String(Math.ceil(Number(safeEval(arg.trim()))));
+        },
+      );
+
+      result = result.replace(
+        /IF\(([^()]*)\)/gi,
+        (_m: string, args: string) => {
+          const parts = splitArgs(args);
+          if (parts.length < 3) return "null";
+          const cond = safeEval(parts[0]!.trim());
+          return cond
+            ? String(safeEval(parts[1]!.trim()))
+            : String(safeEval(parts[2]!.trim()));
+        },
+      );
+
+      result = result.replace(
+        /COALESCE\(([^()]*)\)/gi,
+        (_m: string, args: string) => {
+          const parts = splitArgs(args);
+          for (const part of parts) {
+            const val = safeEval(part.trim());
+            if (val !== null && val !== undefined && val !== "null") {
+              return typeof val === "string"
+                ? JSON.stringify(val)
+                : String(val);
+            }
+          }
+          return "null";
+        },
+      );
+
+      result = result.replace(/NOW\(\)/gi, () =>
+        JSON.stringify(new Date().toISOString()),
+      );
+
+      if (result === previous) break;
+    }
+
+    return result;
+  }
+
+  function splitArgs(argsStr: string): string[] {
+    const args: string[] = [];
+    let depth = 0;
+    let current = "";
+    let inString = false;
+    let stringChar = "";
+
+    for (const char of argsStr) {
+      if (inString) {
+        current += char;
+        if (char === stringChar) inString = false;
+        continue;
+      }
+
+      if (char === '"' || char === "'") {
+        inString = true;
+        stringChar = char;
+        current += char;
+      } else if (char === "(") {
+        depth++;
+        current += char;
+      } else if (char === ")") {
+        depth--;
+        current += char;
+      } else if (char === "," && depth === 0) {
+        args.push(current);
+        current = "";
+      } else {
+        current += char;
+      }
+    }
+
+    if (current.trim()) args.push(current);
+    return args;
+  }
+
+  function safeEval(expression: string): any {
+    const trimmed = expression.trim();
+
+    if (trimmed === "null") return null;
+    if (trimmed === "true") return true;
+    if (trimmed === "false") return false;
+
+    if (
+      (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+      (trimmed.startsWith("'") && trimmed.endsWith("'"))
+    ) {
+      return trimmed.slice(1, -1);
+    }
+
+    if (/^-?\d+(\.\d+)?$/.test(trimmed)) {
+      return Number(trimmed);
+    }
+
+    if (/^[\d\s+\-*/().%<>=!&|?:]+$/.test(trimmed)) {
+      return Function(`"use strict"; return (${trimmed})`)();
+    }
+
+    return trimmed;
+  }
+
+  // ─── Schema helpers ───────────────────────────────────────
+
+  async function getPrimaryKeyField(collection: string): Promise<string> {
+    const schema = await getSchema();
+    const collectionSchema = schema.collections[collection];
+    if (collectionSchema?.primary) {
+      return collectionSchema.primary;
+    }
+    return "id";
+  }
+
+  interface FormulaFieldConfig {
+    field: string;
+    formula: string;
+    watchFields: string[];
+    relationalRefs: string[]; // e.g. ["category.name", "author.email"]
+  }
+
+  async function getFormulaFields(
+    collection: string,
+    db?: any,
+  ): Promise<FormulaFieldConfig[]> {
+    const formulaFields: FormulaFieldConfig[] = [];
+    const knex = db || database;
+
+    try {
+      const fieldMetas = await knex
+        .select("field", "options", "interface")
+        .from("directus_fields")
+        .where({ collection, interface: INTERFACE_ID });
+
+      for (const meta of fieldMetas) {
+        let options: any = {};
+        if (typeof meta.options === "string") {
+          try {
+            options = JSON.parse(meta.options);
+          } catch {
+            options = {};
+          }
+        } else if (meta.options) {
+          options = meta.options;
+        }
+
+        if (options.formula) {
+          const watchFields =
+            options.watchFields && options.watchFields.length > 0
+              ? options.watchFields
+              : extractFieldRefs(options.formula);
+
+          formulaFields.push({
+            field: meta.field,
+            formula: options.formula,
+            watchFields,
+            relationalRefs: extractRelationalRefs(options.formula),
+          });
+        }
+      }
+    } catch (err: any) {
+      logger.warn(
+        `[queryable-formula] Error reading formula fields for ${collection}: ${err.message}`,
+      );
+    }
+
+    return formulaFields;
+  }
+
+  async function getAllFormulaCollections(): Promise<
+    Map<string, FormulaFieldConfig[]>
+  > {
+    const result = new Map<string, FormulaFieldConfig[]>();
+
+    try {
+      const allFormulaMetas = await database
+        .select("collection", "field", "options")
+        .from("directus_fields")
+        .where({ interface: INTERFACE_ID });
+
+      for (const meta of allFormulaMetas) {
+        let options: any = {};
+        if (typeof meta.options === "string") {
+          try {
+            options = JSON.parse(meta.options);
+          } catch {
+            options = {};
+          }
+        } else if (meta.options) {
+          options = meta.options;
+        }
+
+        if (!options.formula) continue;
+
+        const watchFields =
+          options.watchFields && options.watchFields.length > 0
+            ? options.watchFields
+            : extractFieldRefs(options.formula);
+
+        const config: FormulaFieldConfig = {
+          field: meta.field,
+          formula: options.formula,
+          watchFields,
+          relationalRefs: extractRelationalRefs(options.formula),
+        };
+
+        const existing = result.get(meta.collection) || [];
+        existing.push(config);
+        result.set(meta.collection, existing);
+      }
+    } catch (err: any) {
+      logger.warn(
+        `[queryable-formula] Error scanning formula fields: ${err.message}`,
+      );
+    }
+
+    return result;
+  }
+
+  // ─── Backfill engine ──────────────────────────────────────
+
+  async function backfillCollection(
+    collection: string,
+    formulaFields: FormulaFieldConfig[],
+    options: { onlyNulls?: boolean } = {},
+  ): Promise<number> {
+    const primaryKey = await getPrimaryKeyField(collection);
+    let totalUpdated = 0;
+    let offset = 0;
+
+    logger.info(
+      `[queryable-formula] Backfilling ${formulaFields.length} formula field(s) in "${collection}"${options.onlyNulls ? " (null values only)" : " (all rows)"}...`,
+    );
+
+    while (true) {
+      // Build query — select primary key + all fields needed
+      // by any formula (including FK columns for relational refs)
+      const allDependentFields = new Set<string>();
+      allDependentFields.add(primaryKey);
+
+      // Collect all relational refs across formulas
+      const allRelationalRefs: string[] = [];
+
+      for (const ff of formulaFields) {
+        allDependentFields.add(ff.field);
+        for (const wf of ff.watchFields) {
+          allDependentFields.add(wf);
+        }
+        // Also include FK columns for relational refs
+        for (const rr of ff.relationalRefs) {
+          const localField = rr.split(".")[0]!;
+          allDependentFields.add(localField);
+          if (!allRelationalRefs.includes(rr)) allRelationalRefs.push(rr);
+        }
+      }
+
+      let query = database
+        .select([...allDependentFields])
+        .from(collection)
+        .orderBy(primaryKey, "asc")
+        .limit(BATCH_SIZE)
+        .offset(offset);
+
+      // If onlyNulls, only fetch rows where at least one formula
+      // field is null
+      if (options.onlyNulls) {
+        query = query.where((builder: any) => {
+          for (const ff of formulaFields) {
+            builder.orWhereNull(ff.field);
+            builder.orWhere(ff.field, "=", "");
+          }
+        });
+      }
+
+      const rows = await query;
+
+      if (!rows || rows.length === 0) break;
+
+      // Batch-resolve relational data for this batch
+      const relationalMap = await batchResolveRelationalData(
+        collection,
+        rows,
+        allRelationalRefs,
+      );
+
+      // Process each row
+      for (let rowIdx = 0; rowIdx < rows.length; rowIdx++) {
+        const row = rows[rowIdx]!;
+        const relationalData = relationalMap.get(rowIdx) || {};
+        const mergedRow = { ...row, ...relationalData };
+        const updates: Record<string, any> = {};
+        let needsUpdate = false;
+
+        for (const ff of formulaFields) {
+          const computed = evaluateFormula(ff.formula, mergedRow);
+
+          if (computed === null || computed === undefined) continue;
+
+          // Check if value actually changed
+          const current = row[ff.field];
+          const computedStr = String(computed);
+          const currentStr =
+            current !== null && current !== undefined ? String(current) : null;
+
+          if (currentStr !== computedStr) {
+            updates[ff.field] = computed;
+            needsUpdate = true;
+          }
+        }
+
+        if (needsUpdate) {
+          try {
+            await database(collection)
+              .where(primaryKey, row[primaryKey])
+              .update(updates);
+            totalUpdated++;
+          } catch (err: any) {
+            logger.warn(
+              `[queryable-formula] Failed to update ${collection}[${row[primaryKey]}]: ${err.message}`,
+            );
+          }
+        }
+      }
+
+      // If we're doing onlyNulls and got fewer than BATCH_SIZE,
+      // we're done. If not onlyNulls, advance offset.
+      if (options.onlyNulls) {
+        // Re-query since we've updated some; if no more nulls,
+        // the next iteration will return 0 rows
+        // Don't advance offset since rows shift
+        if (rows.length < BATCH_SIZE) break;
+      } else {
+        offset += BATCH_SIZE;
+        if (rows.length < BATCH_SIZE) break;
+      }
+    }
+
+    if (totalUpdated > 0) {
+      logger.info(
+        `[queryable-formula] Backfilled ${totalUpdated} row(s) in "${collection}"`,
+      );
+    } else {
+      logger.debug(
+        `[queryable-formula] No rows needed backfill in "${collection}"`,
+      );
+    }
+
+    return totalUpdated;
+  }
+
+  async function backfillAll(options: { onlyNulls?: boolean } = {}) {
+    if (backfillRunning) {
+      logger.debug("[queryable-formula] Backfill already running, skipping");
+      return;
+    }
+
+    backfillRunning = true;
+
+    try {
+      const collections = await getAllFormulaCollections();
+
+      if (collections.size === 0) {
+        logger.debug(
+          "[queryable-formula] No formula fields found, nothing to backfill",
+        );
+        return;
+      }
+
+      logger.info(
+        `[queryable-formula] Starting backfill for ${collections.size} collection(s)...`,
+      );
+
+      let totalUpdated = 0;
+
+      for (const [collection, fields] of collections) {
+        try {
+          const updated = await backfillCollection(collection, fields, options);
+          totalUpdated += updated;
+        } catch (err: any) {
+          logger.error(
+            `[queryable-formula] Backfill failed for "${collection}": ${err.message}`,
+          );
+        }
+      }
+
+      logger.info(
+        `[queryable-formula] Backfill complete. ${totalUpdated} total row(s) updated.`,
+      );
+    } finally {
+      backfillRunning = false;
+    }
+  }
+
+  // ─── CRON Scheduling ─────────────────────────────────────
+
+  function parseCronToMs(cron: string): number | null {
+    const parts = cron.trim().split(/\s+/);
+    if (parts.length < 5) return null;
+    const [minute, hour, dayOfMonth, month, dayOfWeek] = parts;
+
+    // Only support simple interval patterns for setInterval
+    // */N * * * * → every N minutes
+    if (
+      hour === "*" &&
+      dayOfMonth === "*" &&
+      month === "*" &&
+      dayOfWeek === "*"
+    ) {
+      if (minute === "*") return 60_000; // every minute
+      const everyN = minute!.match(/^\*\/(\d+)$/);
+      if (everyN) return parseInt(everyN[1]!, 10) * 60_000;
+      // Specific minute like "0" means once per hour at minute 0
+    }
+
+    // 0 * * * * → every hour
+    if (
+      /^\d+$/.test(minute!) &&
+      hour === "*" &&
+      dayOfMonth === "*" &&
+      month === "*" &&
+      dayOfWeek === "*"
+    ) {
+      return 60 * 60_000;
+    }
+
+    // 0 0 * * * → daily
+    if (
+      /^\d+$/.test(minute!) &&
+      /^\d+$/.test(hour!) &&
+      dayOfMonth === "*" &&
+      month === "*" &&
+      dayOfWeek === "*"
+    ) {
+      return 24 * 60 * 60_000;
+    }
+
+    // 0 0 * * 0 → weekly
+    if (
+      /^\d+$/.test(minute!) &&
+      /^\d+$/.test(hour!) &&
+      dayOfMonth === "*" &&
+      month === "*" &&
+      /^\d+$/.test(dayOfWeek!)
+    ) {
+      return 7 * 24 * 60 * 60_000;
+    }
+
+    // Fallback: default to hourly for unrecognized patterns
+    return 60 * 60_000;
+  }
+
+  async function setupCronSchedules() {
+    // Clear existing timers
+    for (const [key, timer] of cronTimers) {
+      clearInterval(timer);
+      cronTimers.delete(key);
+    }
+
+    try {
+      const allFormulaMetas = await database
+        .select("collection", "field", "options")
+        .from("directus_fields")
+        .where({ interface: INTERFACE_ID });
+
+      for (const meta of allFormulaMetas) {
+        let options: any = {};
+        if (typeof meta.options === "string") {
+          try {
+            options = JSON.parse(meta.options);
+          } catch {
+            options = {};
+          }
+        } else if (meta.options) {
+          options = meta.options;
+        }
+
+        if (!options.cronSchedule) continue;
+
+        const intervalMs = parseCronToMs(options.cronSchedule);
+        if (!intervalMs) continue;
+
+        const timerKey = `${meta.collection}::${meta.field}`;
+        logger.info(
+          `[queryable-formula] Scheduling recalculation for "${timerKey}" every ${Math.round(intervalMs / 60_000)} min`,
+        );
+
+        const timer = setInterval(async () => {
+          try {
+            const fields = await getFormulaFields(meta.collection);
+            if (fields.length > 0) {
+              await backfillCollection(meta.collection, fields);
+            }
+          } catch (err: any) {
+            logger.error(
+              `[queryable-formula] Scheduled recalc failed for "${timerKey}": ${err.message}`,
+            );
+          }
+        }, intervalMs);
+
+        cronTimers.set(timerKey, timer);
+      }
+
+      if (cronTimers.size > 0) {
+        logger.info(
+          `[queryable-formula] ${cronTimers.size} cron schedule(s) active`,
+        );
+      }
+    } catch (err: any) {
+      logger.error(
+        `[queryable-formula] Failed to set up cron schedules: ${err.message}`,
+      );
+    }
+  }
+
+  // ─── 1. SERVER STARTUP: Backfill nulls + set up CRON ─────
+
+  init("app.after", async () => {
+    // Small delay to ensure DB is ready
+    setTimeout(async () => {
+      try {
+        await backfillAll({ onlyNulls: true });
+      } catch (err: any) {
+        logger.error(
+          `[queryable-formula] Startup backfill failed: ${err.message}`,
+        );
+      }
+
+      // Set up CRON schedules after backfill
+      try {
+        await setupCronSchedules();
+      } catch (err: any) {
+        logger.error(
+          `[queryable-formula] Startup cron setup failed: ${err.message}`,
+        );
+      }
+    }, 5000);
+  });
+
+  // ─── 2. FORMULA FIELD CREATED/UPDATED: Full backfill ─────
+
+  action(
+    "fields.create",
+    async (meta: {
+      key: string;
+      payload: Record<string, any>;
+      collection: string;
+    }) => {
+      const { payload, collection: metaCollection } = meta;
+
+      // Determine if this is a queryable-formula field
+      const iface = payload?.meta?.interface ?? payload?.interface;
+      if (iface !== INTERFACE_ID) return;
+
+      const collection = metaCollection ?? payload?.collection;
+      if (!collection) return;
+
+      logger.info(
+        `[queryable-formula] New formula field detected in "${collection}", triggering backfill...`,
+      );
+
+      // Short delay to let Directus finish its own processing
+      setTimeout(async () => {
+        try {
+          const fields = await getFormulaFields(collection);
+          if (fields.length > 0) {
+            await backfillCollection(collection, fields);
+          }
+        } catch (err: any) {
+          logger.error(
+            `[queryable-formula] Post-create backfill failed: ${err.message}`,
+          );
+        }
+        // Refresh CRON schedules in case new field has one
+        await setupCronSchedules();
+      }, 2000);
+    },
+  );
+
+  action(
+    "fields.update",
+    async (meta: {
+      keys: string[];
+      payload: Record<string, any>;
+      collection: string;
+    }) => {
+      // When field options change (formula edited), re-backfill.
+      // Directus fires this whenever a field's metadata is saved.
+      // We scan the DB for the affected fields to determine which
+      // collections need recalculation.
+
+      const collections = new Set<string>();
+
+      // Try to get collection from meta directly
+      if (meta.collection) {
+        // Check if any formula fields exist in this collection
+        try {
+          const fields = await getFormulaFields(meta.collection);
+          if (fields.length > 0) {
+            collections.add(meta.collection);
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      // Also look up each key — keys may be field names or numeric IDs
+      for (const key of meta.keys) {
+        try {
+          // Try by field name + collection
+          let fieldRecord = meta.collection
+            ? await database
+                .select("collection", "interface")
+                .from("directus_fields")
+                .where({
+                  collection: meta.collection,
+                  field: key,
+                  interface: INTERFACE_ID,
+                })
+                .first()
+            : null;
+
+          // Fallback: try by numeric id
+          if (!fieldRecord) {
+            fieldRecord = await database
+              .select("collection", "interface")
+              .from("directus_fields")
+              .where({ id: key })
+              .first();
+          }
+
+          if (fieldRecord && fieldRecord.interface === INTERFACE_ID) {
+            collections.add(fieldRecord.collection);
+          }
+        } catch {
+          // ignore lookup failures
+        }
+      }
+
+      if (collections.size === 0) return;
+
+      logger.info(
+        `[queryable-formula] Formula field updated, re-backfilling ${collections.size} collection(s)...`,
+      );
+
+      setTimeout(async () => {
+        for (const collection of collections) {
+          try {
+            const fields = await getFormulaFields(collection);
+            if (fields.length > 0) {
+              // Full recompute since formula changed
+              await backfillCollection(collection, fields);
+            }
+          } catch (err: any) {
+            logger.error(
+              `[queryable-formula] Post-update backfill failed for "${collection}": ${err.message}`,
+            );
+          }
+        }
+        // Refresh CRON schedules in case cron expression changed
+        await setupCronSchedules();
+      }, 2000);
+    },
+  );
+
+  // ─── 3. ITEM CREATE: Compute before save ──────────────────
+
+  filter(
+    "items.create",
+    async (
+      payload: Record<string, any>,
+      meta: { collection: string },
+      eventContext: any,
+    ) => {
+      const { collection } = meta;
+      const db = eventContext.database || database;
+      const formulaFields = await getFormulaFields(collection, db);
+
+      if (formulaFields.length === 0) return payload;
+
+      // Collect relational refs across all formulas
+      const allRelRefs = formulaFields.flatMap((ff) => ff.relationalRefs);
+      const relationalData =
+        allRelRefs.length > 0
+          ? await resolveRelationalData(collection, payload, allRelRefs, db)
+          : {};
+      const enrichedPayload = { ...payload, ...relationalData };
+
+      for (const { field, formula } of formulaFields) {
+        const result = evaluateFormula(formula, enrichedPayload);
+        if (result !== null && result !== undefined) {
+          payload[field] = result;
+        }
+      }
+
+      return payload;
+    },
+  );
+
+  // ─── 4. ITEM UPDATE: Recompute if deps changed ───────────
+
+  filter(
+    "items.update",
+    async (
+      payload: Record<string, any>,
+      meta: { collection: string; keys: string[] },
+      eventContext: any,
+    ) => {
+      const { collection, keys } = meta;
+      const db = eventContext.database || database;
+      const formulaFields = await getFormulaFields(collection, db);
+
+      if (formulaFields.length === 0) return payload;
+
+      const relevantFormulas = formulaFields.filter(({ watchFields }) =>
+        watchFields.some((wf) => wf in payload),
+      );
+
+      if (relevantFormulas.length === 0) return payload;
+      const primaryKeyField = await getPrimaryKeyField(collection);
+
+      for (const key of keys) {
+        try {
+          const existing = await db
+            .select("*")
+            .from(collection)
+            .where(primaryKeyField, key)
+            .first();
+
+          if (!existing) continue;
+
+          const merged = { ...existing, ...payload };
+
+          // Resolve relational data for formulas that need it
+          const allRelRefs = relevantFormulas.flatMap(
+            (ff) => ff.relationalRefs,
+          );
+          const relationalData =
+            allRelRefs.length > 0
+              ? await resolveRelationalData(collection, merged, allRelRefs, db)
+              : {};
+          const enrichedMerged = { ...merged, ...relationalData };
+
+          for (const { field, formula } of relevantFormulas) {
+            const result = evaluateFormula(formula, enrichedMerged);
+            if (result !== null && result !== undefined) {
+              payload[field] = result;
+            }
+          }
+        } catch (err: any) {
+          logger.warn(
+            `[queryable-formula] Error fetching record ${key} from ${collection}: ${err.message}`,
+          );
+        }
+      }
+
+      return payload;
+    },
+  );
+};
