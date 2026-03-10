@@ -59,12 +59,23 @@
           <button
             v-for="f in collectionFields"
             :key="f.field"
-            class="fb-chip fb-chip--field"
-            :title="`${f.name} (${f.type})`"
+            :class="[
+              'fb-chip',
+              f.isFormula ? 'fb-chip--formula' : 'fb-chip--field',
+            ]"
+            :title="
+              f.isFormula
+                ? `${f.name} (formula field)`
+                : `${f.name} (${f.type})`
+            "
             @click="insertText(`{{${f.field}}}`)"
           >
-            <v-icon :name="fieldTypeIcon(f.type)" x-small />
+            <v-icon
+              :name="f.isFormula ? 'functions' : fieldTypeIcon(f.type)"
+              x-small
+            />
             <span>{{ f.field }}</span>
+            <span v-if="f.isFormula" class="fb-chip-badge">formula</span>
           </button>
         </div>
       </div>
@@ -297,7 +308,6 @@ const collectionFields = computed(() => {
     const all = fieldsStore.getFieldsForCollection(props.collection);
     return all
       .filter((f: any) => {
-        if (f.meta?.interface === "queryable-formula") return false;
         if (f.meta?.special?.includes("no-data")) return false;
         if (!f.type) return false;
         return true;
@@ -306,6 +316,7 @@ const collectionFields = computed(() => {
         field: f.field as string,
         name: (f.name ?? f.field) as string,
         type: (f.type ?? "unknown") as string,
+        isFormula: f.meta?.interface === "queryable-formula",
       }));
   } catch {
     return [];
@@ -624,10 +635,14 @@ function checkAutocomplete() {
   if (lastOpen >= 0 && lastOpen > lastClose) {
     const partial = text.slice(lastOpen + 2).toLowerCase();
 
-    // Local fields
+    // Local fields (formula fields tagged distinctly)
     const localMatches = collectionFields.value
       .filter((f) => f.field.toLowerCase().includes(partial))
-      .map((f) => ({ value: f.field, label: f.field, type: f.type }));
+      .map((f) => ({
+        value: f.field,
+        label: f.field,
+        type: f.isFormula ? "formula" : f.type,
+      }));
 
     // Relational fields (dotted: e.g. "category.name")
     const relMatches: typeof localMatches = [];
@@ -742,6 +757,88 @@ function insertText(rawText: string) {
   });
 }
 
+/* ─── Circular dependency detection ─── */
+
+/**
+ * Build the dependency graph of all formula fields in this collection
+ * (including the current formula being edited) and detect cycles
+ * using Kahn's algorithm.
+ */
+function detectCircularDeps(): string[] {
+  if (!fieldsStore || !props.collection) return [];
+  try {
+    const all = fieldsStore.getFieldsForCollection(props.collection);
+    const formulaEntries: { field: string; formula: string }[] = [];
+
+    for (const f of all) {
+      if (f.meta?.interface !== "queryable-formula") continue;
+      const opts =
+        typeof f.meta?.options === "string"
+          ? JSON.parse(f.meta.options)
+          : f.meta?.options;
+      const fFormula = opts?.formula;
+      if (!fFormula) continue;
+      formulaEntries.push({ field: f.field, formula: fFormula });
+    }
+
+    if (formulaEntries.length < 2) return [];
+
+    const formulaFieldNames = new Set(formulaEntries.map((e) => e.field));
+
+    // field → set of formula fields it depends on
+    const deps = new Map<string, Set<string>>();
+    for (const entry of formulaEntries) {
+      const entryDeps = new Set<string>();
+      const refs = entry.formula.match(/\{\{(\w+)\}\}/g) || [];
+      for (const ref of refs) {
+        const name = ref.replace(/\{\{|\}\}/g, "");
+        if (formulaFieldNames.has(name) && name !== entry.field) {
+          entryDeps.add(name);
+        }
+      }
+      deps.set(entry.field, entryDeps);
+    }
+
+    // Kahn's algorithm — fields left over are in cycles
+    const dependents = new Map<string, Set<string>>();
+    for (const entry of formulaEntries) {
+      dependents.set(entry.field, new Set());
+    }
+    for (const [field, fieldDeps] of deps) {
+      for (const dep of fieldDeps) {
+        dependents.get(dep)?.add(field);
+      }
+    }
+
+    const inDegree = new Map<string, number>();
+    for (const entry of formulaEntries) {
+      inDegree.set(entry.field, deps.get(entry.field)?.size ?? 0);
+    }
+
+    const queue: string[] = [];
+    for (const [field, deg] of inDegree) {
+      if (deg === 0) queue.push(field);
+    }
+
+    const sorted = new Set<string>();
+    while (queue.length > 0) {
+      const field = queue.shift()!;
+      sorted.add(field);
+      for (const dependent of dependents.get(field) ?? []) {
+        const newDeg = (inDegree.get(dependent) ?? 1) - 1;
+        inDegree.set(dependent, newDeg);
+        if (newDeg === 0) queue.push(dependent);
+      }
+    }
+
+    return formulaEntries
+      .filter((e) => !sorted.has(e.field))
+      .map((e) => e.field);
+  } catch {
+    return [];
+  }
+}
+
 /* ─── Validation ─── */
 
 const validation = computed(() => {
@@ -810,6 +907,15 @@ const validation = computed(() => {
     return {
       level: "warning",
       text: `Unknown field${allUnknowns.length > 1 ? "s" : ""}: ${allUnknowns.join(", ")}`,
+    };
+  }
+
+  // Check for circular dependencies among formula fields
+  const circularFields = detectCircularDeps();
+  if (circularFields.length > 0) {
+    return {
+      level: "error",
+      text: `Circular dependency detected involving: ${circularFields.join(", ")}. These fields will be skipped during evaluation.`,
     };
   }
 
@@ -1131,6 +1237,34 @@ function fieldTypeIcon(type: string): string {
   border-color: var(--theme--primary);
   background: color-mix(in srgb, var(--theme--primary) 15%, transparent);
   color: var(--theme--primary);
+}
+
+.fb-chip--formula {
+  border-color: var(--theme--purple, #9333ea);
+  color: var(--theme--purple, #9333ea);
+}
+
+.fb-chip--formula:hover {
+  background: color-mix(
+    in srgb,
+    var(--theme--purple, #9333ea) 8%,
+    transparent
+  );
+}
+
+.fb-chip-badge {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 5px;
+  border-radius: 8px;
+  background: color-mix(
+    in srgb,
+    var(--theme--purple, #9333ea) 15%,
+    transparent
+  );
+  font-family: var(--theme--fonts--sans--font-family, sans-serif);
 }
 
 .fb-chip--relation {

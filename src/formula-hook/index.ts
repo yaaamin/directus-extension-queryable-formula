@@ -779,6 +779,79 @@ export default (
     return workDays;
   }
 
+  // ─── Dependency resolution ─────────────────────────────────
+
+  /**
+   * Topologically sort formula fields so dependencies evaluate first.
+   * Uses Kahn's algorithm. Fields involved in cycles are returned
+   * separately and skipped during evaluation.
+   */
+  function topologicalSortFormulas(
+    formulaFields: FormulaFieldConfig[],
+  ): { sorted: FormulaFieldConfig[]; circular: string[] } {
+    if (formulaFields.length <= 1) {
+      return { sorted: [...formulaFields], circular: [] };
+    }
+
+    const fieldMap = new Map(formulaFields.map((f) => [f.field, f]));
+    const formulaFieldNames = new Set(formulaFields.map((f) => f.field));
+
+    // field → set of formula fields it depends on
+    const deps = new Map<string, Set<string>>();
+    for (const ff of formulaFields) {
+      const formulaDeps = new Set<string>();
+      const refs = ff.formula.match(/\{\{(\w+)\}\}/g) || [];
+      for (const ref of refs) {
+        const name = ref.replace(/\{\{|\}\}/g, "");
+        if (formulaFieldNames.has(name) && name !== ff.field) {
+          formulaDeps.add(name);
+        }
+      }
+      deps.set(ff.field, formulaDeps);
+    }
+
+    // field → set of formula fields that depend on it
+    const dependents = new Map<string, Set<string>>();
+    for (const ff of formulaFields) {
+      dependents.set(ff.field, new Set());
+    }
+    for (const [field, fieldDeps] of deps) {
+      for (const dep of fieldDeps) {
+        dependents.get(dep)?.add(field);
+      }
+    }
+
+    // Kahn's algorithm
+    const inDegree = new Map<string, number>();
+    for (const ff of formulaFields) {
+      inDegree.set(ff.field, deps.get(ff.field)?.size ?? 0);
+    }
+
+    const queue: string[] = [];
+    for (const [field, deg] of inDegree) {
+      if (deg === 0) queue.push(field);
+    }
+
+    const sorted: FormulaFieldConfig[] = [];
+    while (queue.length > 0) {
+      const field = queue.shift()!;
+      sorted.push(fieldMap.get(field)!);
+
+      for (const dependent of dependents.get(field) ?? []) {
+        const newDeg = (inDegree.get(dependent) ?? 1) - 1;
+        inDegree.set(dependent, newDeg);
+        if (newDeg === 0) queue.push(dependent);
+      }
+    }
+
+    // Fields not in sorted are part of a cycle
+    const circular = formulaFields
+      .filter((ff) => !sorted.some((s) => s.field === ff.field))
+      .map((ff) => ff.field);
+
+    return { sorted, circular };
+  }
+
   // ─── Schema helpers ───────────────────────────────────────
 
   async function getPrimaryKeyField(collection: string): Promise<string> {
@@ -961,6 +1034,15 @@ export default (
         allRelationalRefs,
       );
 
+      // Sort formulas so dependencies are evaluated first
+      const { sorted: sortedFormulas, circular } =
+        topologicalSortFormulas(formulaFields);
+      if (circular.length > 0) {
+        logger.warn(
+          `[queryable-formula] Circular dependency in "${collection}" — skipping fields: ${circular.join(", ")}`,
+        );
+      }
+
       // Process each row
       for (let rowIdx = 0; rowIdx < rows.length; rowIdx++) {
         const row = rows[rowIdx]!;
@@ -969,10 +1051,13 @@ export default (
         const updates: Record<string, any> = {};
         let needsUpdate = false;
 
-        for (const ff of formulaFields) {
+        for (const ff of sortedFormulas) {
           const computed = evaluateFormula(ff.formula, mergedRow);
 
           if (computed === null || computed === undefined) continue;
+
+          // Feed result back so dependent formulas see the fresh value
+          mergedRow[ff.field] = computed;
 
           // Check if value actually changed
           const current = row[ff.field];
@@ -1355,18 +1440,28 @@ export default (
 
       if (formulaFields.length === 0) return payload;
 
+      // Sort formulas so dependencies are evaluated first
+      const { sorted: sortedFormulas, circular } =
+        topologicalSortFormulas(formulaFields);
+      if (circular.length > 0) {
+        logger.warn(
+          `[queryable-formula] Circular dependency in "${collection}" — skipping fields: ${circular.join(", ")}`,
+        );
+      }
+
       // Collect relational refs across all formulas
-      const allRelRefs = formulaFields.flatMap((ff) => ff.relationalRefs);
+      const allRelRefs = sortedFormulas.flatMap((ff) => ff.relationalRefs);
       const relationalData =
         allRelRefs.length > 0
           ? await resolveRelationalData(collection, payload, allRelRefs, db)
           : {};
       const enrichedPayload = { ...payload, ...relationalData };
 
-      for (const { field, formula } of formulaFields) {
+      for (const { field, formula } of sortedFormulas) {
         const result = evaluateFormula(formula, enrichedPayload);
         if (result !== null && result !== undefined) {
           payload[field] = result;
+          enrichedPayload[field] = result;
         }
       }
 
@@ -1389,11 +1484,21 @@ export default (
 
       if (formulaFields.length === 0) return payload;
 
-      const relevantFormulas = formulaFields.filter(({ watchFields }) =>
+      // Sort all formulas in dependency order
+      const { sorted: sortedFormulas, circular } =
+        topologicalSortFormulas(formulaFields);
+      if (circular.length > 0) {
+        logger.warn(
+          `[queryable-formula] Circular dependency in "${collection}" — skipping fields: ${circular.join(", ")}`,
+        );
+      }
+
+      // Check if any formula is directly triggered by the payload
+      const hasDirectlyAffected = sortedFormulas.some(({ watchFields }) =>
         watchFields.some((wf) => wf in payload),
       );
+      if (!hasDirectlyAffected) return payload;
 
-      if (relevantFormulas.length === 0) return payload;
       const primaryKeyField = await getPrimaryKeyField(collection);
 
       for (const key of keys) {
@@ -1408,8 +1513,8 @@ export default (
 
           const merged = { ...existing, ...payload };
 
-          // Resolve relational data for formulas that need it
-          const allRelRefs = relevantFormulas.flatMap(
+          // Resolve relational data for all formulas (cascading may need any of them)
+          const allRelRefs = sortedFormulas.flatMap(
             (ff) => ff.relationalRefs,
           );
           const relationalData =
@@ -1418,10 +1523,19 @@ export default (
               : {};
           const enrichedMerged = { ...merged, ...relationalData };
 
-          for (const { field, formula } of relevantFormulas) {
+          // Evaluate in dependency order, cascading through formula-to-formula deps
+          const recalculated = new Set<string>();
+          for (const { field, formula, watchFields } of sortedFormulas) {
+            const shouldRecalc = watchFields.some(
+              (wf) => wf in payload || recalculated.has(wf),
+            );
+            if (!shouldRecalc) continue;
+
             const result = evaluateFormula(formula, enrichedMerged);
             if (result !== null && result !== undefined) {
               payload[field] = result;
+              enrichedMerged[field] = result;
+              recalculated.add(field);
             }
           }
         } catch (err: any) {

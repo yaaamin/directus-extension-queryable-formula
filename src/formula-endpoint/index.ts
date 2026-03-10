@@ -572,6 +572,73 @@ export default (router: any, context: EndpointExtensionContext) => {
     relationalRefs: string[];
   }
 
+  /**
+   * Topologically sort formula fields so dependencies evaluate first.
+   * Uses Kahn's algorithm. Fields involved in cycles are returned
+   * separately and skipped during evaluation.
+   */
+  function topologicalSortFormulas(
+    formulaFields: FormulaFieldConfig[],
+  ): { sorted: FormulaFieldConfig[]; circular: string[] } {
+    if (formulaFields.length <= 1) {
+      return { sorted: [...formulaFields], circular: [] };
+    }
+
+    const fieldMap = new Map(formulaFields.map((f) => [f.field, f]));
+    const formulaFieldNames = new Set(formulaFields.map((f) => f.field));
+
+    const deps = new Map<string, Set<string>>();
+    for (const ff of formulaFields) {
+      const formulaDeps = new Set<string>();
+      const refs = ff.formula.match(/\{\{(\w+)\}\}/g) || [];
+      for (const ref of refs) {
+        const name = ref.replace(/\{\{|\}\}/g, "");
+        if (formulaFieldNames.has(name) && name !== ff.field) {
+          formulaDeps.add(name);
+        }
+      }
+      deps.set(ff.field, formulaDeps);
+    }
+
+    const dependents = new Map<string, Set<string>>();
+    for (const ff of formulaFields) {
+      dependents.set(ff.field, new Set());
+    }
+    for (const [field, fieldDeps] of deps) {
+      for (const dep of fieldDeps) {
+        dependents.get(dep)?.add(field);
+      }
+    }
+
+    const inDegree = new Map<string, number>();
+    for (const ff of formulaFields) {
+      inDegree.set(ff.field, deps.get(ff.field)?.size ?? 0);
+    }
+
+    const queue: string[] = [];
+    for (const [field, deg] of inDegree) {
+      if (deg === 0) queue.push(field);
+    }
+
+    const sorted: FormulaFieldConfig[] = [];
+    while (queue.length > 0) {
+      const field = queue.shift()!;
+      sorted.push(fieldMap.get(field)!);
+
+      for (const dependent of dependents.get(field) ?? []) {
+        const newDeg = (inDegree.get(dependent) ?? 1) - 1;
+        inDegree.set(dependent, newDeg);
+        if (newDeg === 0) queue.push(dependent);
+      }
+    }
+
+    const circular = formulaFields
+      .filter((ff) => !sorted.some((s) => s.field === ff.field))
+      .map((ff) => ff.field);
+
+    return { sorted, circular };
+  }
+
   async function getFormulaFields(
     collection: string,
   ): Promise<FormulaFieldConfig[]> {
@@ -721,6 +788,15 @@ export default (router: any, context: EndpointExtensionContext) => {
         return res.json({ updated: 0, message: "No formula fields found" });
       }
 
+      // Sort formulas so dependencies are evaluated first
+      const { sorted: sortedFormulas, circular } =
+        topologicalSortFormulas(formulaFields);
+      if (circular.length > 0) {
+        logger.warn(
+          `[queryable-formula] Circular dependency in "${collection}" — skipping fields: ${circular.join(", ")}`,
+        );
+      }
+
       const primaryKey = await getPrimaryKeyField(collection);
       let totalUpdated = 0;
       let offset = 0;
@@ -729,7 +805,7 @@ export default (router: any, context: EndpointExtensionContext) => {
         const allDependentFields = new Set<string>();
         allDependentFields.add(primaryKey);
         const allRelationalRefs: string[] = [];
-        for (const ff of formulaFields) {
+        for (const ff of sortedFormulas) {
           allDependentFields.add(ff.field);
           for (const wf of ff.watchFields) allDependentFields.add(wf);
           for (const rr of ff.relationalRefs) {
@@ -761,9 +837,13 @@ export default (router: any, context: EndpointExtensionContext) => {
           const updates: Record<string, any> = {};
           let needsUpdate = false;
 
-          for (const ff of formulaFields) {
+          for (const ff of sortedFormulas) {
             const computed = evaluateFormula(ff.formula, mergedRow);
             if (computed === null || computed === undefined) continue;
+
+            // Feed result back so dependent formulas see the fresh value
+            mergedRow[ff.field] = computed;
+
             const current = row[ff.field];
             if (
               String(computed) !== (current != null ? String(current) : null)
