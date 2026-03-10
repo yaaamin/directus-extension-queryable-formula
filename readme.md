@@ -1,6 +1,6 @@
 # Queryable Formula — Directus Extension
 
-A computed field extension for Directus that stores formula results in the database, making them queryable, sortable, and filterable. Includes a visual formula builder, relational field lookups, scheduled recalculation, and a force-recalculate button.
+A computed field extension for Directus that stores formula results in the database, making them queryable, sortable, and filterable. Includes a visual formula builder, relational field lookups, **cross-formula references with dependency ordering**, scheduled recalculation, and a force-recalculate button.
 
 ---
 
@@ -230,6 +230,41 @@ Use `{{field_name}}` to reference any field **on the same item**:
 {{created_date}}    → date field (treated as string)
 ```
 
+### Calculated Fields (Formula-to-Formula References)
+
+You can reference **other formula fields** in the same collection using the same `{{field_name}}` syntax. The engine automatically detects the dependency graph and evaluates formulas in the correct order so that each formula always sees a freshly computed value from the fields it depends on.
+
+```text
+{{subtotal}}        → another formula field (e.g. price * quantity)
+{{vat_amount}}      → formula field that itself references {{subtotal}}
+```
+
+For example, if you have three formula fields:
+
+| Field | Formula |
+| --- | --- |
+| `subtotal` | `{{price}} * {{quantity}}` |
+| `vat_amount` | `{{subtotal}} * {{vat_rate}} / 100` |
+| `total` | `{{subtotal}} + {{vat_amount}}` |
+
+All three will compute correctly in a single pass — `subtotal` is evaluated first, then `vat_amount` (using the fresh `subtotal`), then `total` (using the fresh `subtotal` and `vat_amount`).
+
+**Cascading on update:** If you update a raw field like `price`, the engine recalculates `subtotal`, notices it changed, then cascades to `vat_amount` and `total` — all in the same write operation.
+
+**In the formula builder**, formula fields appear in the Available Fields palette with a purple **formula** badge so you can clearly tell them apart from regular fields. They are also included in the `{{` autocomplete popup.
+
+#### Circular dependency protection
+
+If field A references B and B references A (directly or through a chain), the engine detects the cycle using a topological sort:
+
+- **In the UI**: the validation panel shows a red error message listing the fields involved in the cycle.
+- **At runtime**: circular fields are logged as a warning and **skipped** — they keep their last stored value rather than causing an infinite loop.
+
+```text
+✘ field_a → field_b → field_a   (cycle — both fields are skipped)
+✔ field_a → field_b → raw_field (no cycle — evaluated in order)
+```
+
 ### Relational Fields (M2O Lookups)
 
 Use `{{relation.field}}` to pull a value from a **related item** via a Many-to-One relationship. The engine automatically resolves the foreign key, finds the related table and primary key via the Directus schema, and fetches the value.
@@ -332,6 +367,29 @@ ROUND({{subtotal}} * (1 + {{region.tax_rate}} / 100), 2)
 COALESCE({{author.display_name}}, CONCAT({{author.first_name}}, " ", {{author.last_name}}), "Unknown Author")
 ```
 
+**Multi-step pricing using formula fields (cross-formula references):**
+
+```text
+-- subtotal formula:
+{{price}} * {{quantity}}
+
+-- vat_amount formula (references subtotal):
+{{subtotal}} * {{vat_rate}} / 100
+
+-- total formula (references both):
+{{subtotal}} + {{vat_amount}}
+```
+
+**Tiered commission using a base formula:**
+
+```text
+-- base_revenue formula:
+ROUND({{price}} * {{quantity}} * (1 - {{discount_pct}} / 100), 2)
+
+-- commission formula (references base_revenue):
+IF({{base_revenue}} > 10000, {{base_revenue}} * 0.1, {{base_revenue}} * 0.05)
+```
+
 ---
 
 ## Force Recalculate
@@ -381,3 +439,4 @@ These are **not** currently implemented:
 | `MIN()`, `MAX()`, `ABS()`, `POWER()`   | Extended math                                             |
 | Regex                                  | No pattern matching                                       |
 | Holiday-aware `NETWORKDAYS`            | Holidays parameter not supported — weekends only          |
+| Cross-collection formula references    | Can only reference fields within the same collection      |
