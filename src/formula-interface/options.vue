@@ -16,7 +16,7 @@
           :value="formula"
           @input="onFormulaInput"
           @keydown="onEditorKeydown"
-          @click="checkAutocomplete"
+          @click="checkAutocomplete(); checkSignatureHelp()"
           @blur="onEditorBlur"
           placeholder="e.g. {{price}} * {{quantity}}"
           rows="4"
@@ -30,9 +30,32 @@
               :class="['ac-option', { 'ac-active': idx === ac.index }]"
               @mousedown.prevent="pickAutocomplete(item)"
             >
-              <v-icon :name="fieldTypeIcon(item.type)" x-small />
-              <span class="ac-name">{{ item.label }}</span>
-              <span class="ac-type">{{ item.type }}</span>
+              <v-icon :name="ac.mode === 'function' ? 'functions' : fieldTypeIcon(item.type)" x-small />
+              <div class="ac-item-text">
+                <span class="ac-name">{{ item.label }}</span>
+                <span v-if="item.hint" class="ac-hint">{{ item.hint }}</span>
+              </div>
+              <span class="ac-type">{{ ac.mode === 'function' ? item.returnType ?? 'any' : item.type }}</span>
+            </div>
+          </div>
+        </transition>
+
+        <!-- Signature Help -->
+        <transition name="ac-fade">
+          <div v-if="sig.show && sig.fn" class="sig-help">
+            <div class="sig-help-signature">
+              <span class="sig-fn-name">{{ sig.fn.name }}</span><span class="sig-paren">(</span><template v-for="(param, i) in sig.fn.params" :key="i"><span v-if="i > 0" class="sig-comma">, </span><span :class="['sig-param', { 'sig-param--active': i === sig.paramIndex }]">{{ param.name }}<span v-if="param.optional" class="sig-optional-mark">?</span></span></template><span class="sig-paren">)</span>
+              <span class="sig-return">→ {{ sig.fn.returnType }}</span>
+            </div>
+            <div v-if="sig.fn.params[sig.paramIndex]" class="sig-help-detail">
+              <strong>{{ sig.fn.params[sig.paramIndex].name }}</strong>
+              <span v-if="sig.fn.params[sig.paramIndex].optional" class="sig-optional-badge">optional</span>
+              — {{ sig.fn.params[sig.paramIndex].description }}
+            </div>
+            <div class="sig-help-desc">{{ sig.fn.description }}</div>
+            <div v-if="sig.fn.example" class="sig-help-example">
+              <span class="sig-example-label">Example:</span>
+              <code>{{ sig.fn.example }}</code>
             </div>
           </div>
         </transition>
@@ -413,6 +436,271 @@ const KNOWN_FUNCTIONS = new Set([
   "NETWORKDAYS",
 ]);
 
+/* ─── Function Signatures (for autocomplete & signature help) ─── */
+
+interface FnParam {
+  name: string;
+  description: string;
+  optional?: boolean;
+}
+
+interface FnSignature {
+  name: string;
+  description: string;
+  params: FnParam[];
+  returnType: string;
+  example?: string;
+}
+
+const FUNCTION_SIGNATURES: Record<string, FnSignature> = {
+  CONCAT: {
+    name: "CONCAT",
+    description: "Join values together into a single string",
+    params: [
+      { name: "value1", description: "First value to concatenate" },
+      { name: "value2", description: "Second value to concatenate" },
+      { name: "...", description: "Additional values", optional: true },
+    ],
+    returnType: "string",
+    example: 'CONCAT({{first_name}}, " ", {{last_name}})',
+  },
+  UPPER: {
+    name: "UPPER",
+    description: "Convert text to uppercase",
+    params: [{ name: "text", description: "The text to convert" }],
+    returnType: "string",
+    example: "UPPER({{name}})",
+  },
+  LOWER: {
+    name: "LOWER",
+    description: "Convert text to lowercase",
+    params: [{ name: "text", description: "The text to convert" }],
+    returnType: "string",
+    example: "LOWER({{email}})",
+  },
+  TRIM: {
+    name: "TRIM",
+    description: "Remove leading and trailing whitespace",
+    params: [{ name: "text", description: "The text to trim" }],
+    returnType: "string",
+    example: "TRIM({{name}})",
+  },
+  ROUND: {
+    name: "ROUND",
+    description: "Round a number to a specified number of decimal places",
+    params: [
+      { name: "number", description: "The number to round" },
+      { name: "decimals", description: "Number of decimal places (default: 0)", optional: true },
+    ],
+    returnType: "number",
+    example: "ROUND({{price}}, 2)",
+  },
+  FLOOR: {
+    name: "FLOOR",
+    description: "Round down to the nearest integer",
+    params: [{ name: "number", description: "The number to round down" }],
+    returnType: "number",
+    example: "FLOOR({{score}})",
+  },
+  CEIL: {
+    name: "CEIL",
+    description: "Round up to the nearest integer",
+    params: [{ name: "number", description: "The number to round up" }],
+    returnType: "number",
+    example: "CEIL({{score}})",
+  },
+  IF: {
+    name: "IF",
+    description: "Return one value if a condition is true, another if false",
+    params: [
+      { name: "condition", description: "The condition to evaluate" },
+      { name: "then_value", description: "Value if condition is true" },
+      { name: "else_value", description: "Value if condition is false" },
+    ],
+    returnType: "any",
+    example: 'IF({{age}} >= 18, "Adult", "Minor")',
+  },
+  COALESCE: {
+    name: "COALESCE",
+    description: "Return the first non-null value from a list",
+    params: [
+      { name: "value1", description: "First value to check" },
+      { name: "value2", description: "Second value to check" },
+      { name: "...", description: "Additional values", optional: true },
+    ],
+    returnType: "any",
+    example: 'COALESCE({{nickname}}, {{name}}, "Unknown")',
+  },
+  NOW: {
+    name: "NOW",
+    description: "Current date and time as ISO timestamp",
+    params: [],
+    returnType: "datetime",
+  },
+  TODAY: {
+    name: "TODAY",
+    description: "Current date in YYYY-MM-DD format",
+    params: [],
+    returnType: "date",
+  },
+  DATE: {
+    name: "DATE",
+    description: "Create a date from year, month, and day components",
+    params: [
+      { name: "year", description: "The year (e.g. 2024)" },
+      { name: "month", description: "The month (1–12)" },
+      { name: "day", description: "The day of the month (1–31)" },
+    ],
+    returnType: "date",
+    example: "DATE(2024, 1, 15)",
+  },
+  DATEVALUE: {
+    name: "DATEVALUE",
+    description: "Parse a date string into an ISO date",
+    params: [{ name: "date_string", description: "A string containing a date" }],
+    returnType: "date",
+    example: 'DATEVALUE("2024-06-15")',
+  },
+  TIME: {
+    name: "TIME",
+    description: "Create a time string from hour, minute, and second",
+    params: [
+      { name: "hour", description: "Hour (0–23)" },
+      { name: "minute", description: "Minute (0–59)" },
+      { name: "second", description: "Second (0–59)" },
+    ],
+    returnType: "time",
+    example: "TIME(14, 30, 0)",
+  },
+  TIMEVALUE: {
+    name: "TIMEVALUE",
+    description: "Extract the time part from a datetime value",
+    params: [{ name: "datetime", description: "A datetime value" }],
+    returnType: "time",
+    example: "TIMEVALUE({{created_at}})",
+  },
+  YEAR: {
+    name: "YEAR",
+    description: "Extract the year from a date",
+    params: [{ name: "date", description: "A date or datetime value" }],
+    returnType: "number",
+    example: "YEAR({{dob}})",
+  },
+  MONTH: {
+    name: "MONTH",
+    description: "Extract the month (1–12) from a date",
+    params: [{ name: "date", description: "A date or datetime value" }],
+    returnType: "number",
+    example: "MONTH({{dob}})",
+  },
+  DAY: {
+    name: "DAY",
+    description: "Extract the day of the month (1–31) from a date",
+    params: [{ name: "date", description: "A date or datetime value" }],
+    returnType: "number",
+    example: "DAY({{dob}})",
+  },
+  HOUR: {
+    name: "HOUR",
+    description: "Extract the hour (0–23) from a datetime",
+    params: [{ name: "datetime", description: "A datetime value" }],
+    returnType: "number",
+    example: "HOUR({{created_at}})",
+  },
+  MINUTE: {
+    name: "MINUTE",
+    description: "Extract the minute (0–59) from a datetime",
+    params: [{ name: "datetime", description: "A datetime value" }],
+    returnType: "number",
+    example: "MINUTE({{created_at}})",
+  },
+  SECOND: {
+    name: "SECOND",
+    description: "Extract the second (0–59) from a datetime",
+    params: [{ name: "datetime", description: "A datetime value" }],
+    returnType: "number",
+    example: "SECOND({{created_at}})",
+  },
+  WEEKDAY: {
+    name: "WEEKDAY",
+    description: "Return the day of the week for a date",
+    params: [
+      { name: "date", description: "A date value" },
+      { name: "type", description: "Numbering type (1=Sun–Sat, 2=Mon–Sun, 3=Mon=0–Sun=6)", optional: true },
+    ],
+    returnType: "number",
+    example: "WEEKDAY({{dob}})",
+  },
+  WEEKNUM: {
+    name: "WEEKNUM",
+    description: "Return the week number of the year",
+    params: [
+      { name: "date", description: "A date value" },
+      { name: "type", description: "Week start (1=Sunday, 2=Monday)", optional: true },
+    ],
+    returnType: "number",
+    example: "WEEKNUM({{dob}})",
+  },
+  ISOWEEKNUM: {
+    name: "ISOWEEKNUM",
+    description: "Return the ISO 8601 week number of the year",
+    params: [{ name: "date", description: "A date value" }],
+    returnType: "number",
+    example: "ISOWEEKNUM({{dob}})",
+  },
+  DATEDIF: {
+    name: "DATEDIF",
+    description: "Calculate the difference between two dates in the specified unit",
+    params: [
+      { name: "start_date", description: "The start date" },
+      { name: "end_date", description: "The end date" },
+      { name: "unit", description: '"Y" (years), "M" (months), "D" (days), "YM", "MD", or "YD"' },
+    ],
+    returnType: "number",
+    example: 'DATEDIF({{dob}}, NOW(), "Y")',
+  },
+  DAYS: {
+    name: "DAYS",
+    description: "Return the number of days between two dates",
+    params: [
+      { name: "end_date", description: "The end date" },
+      { name: "start_date", description: "The start date" },
+    ],
+    returnType: "number",
+    example: "DAYS(NOW(), {{hire_date}})",
+  },
+  EDATE: {
+    name: "EDATE",
+    description: "Return a date offset by a given number of months",
+    params: [
+      { name: "start_date", description: "The starting date" },
+      { name: "months", description: "Number of months to add (negative to subtract)" },
+    ],
+    returnType: "date",
+    example: "EDATE({{start_date}}, 3)",
+  },
+  EOMONTH: {
+    name: "EOMONTH",
+    description: "Return the last day of the month, offset by N months",
+    params: [
+      { name: "start_date", description: "The starting date" },
+      { name: "months", description: "Number of months to offset" },
+    ],
+    returnType: "date",
+    example: "EOMONTH({{start_date}}, 0)",
+  },
+  NETWORKDAYS: {
+    name: "NETWORKDAYS",
+    description: "Return the number of working days (Mon–Fri) between two dates",
+    params: [
+      { name: "start_date", description: "The start date" },
+      { name: "end_date", description: "The end date" },
+    ],
+    returnType: "number",
+    example: "NETWORKDAYS({{start_date}}, {{end_date}})",
+  },
+};
+
 interface FnDef {
   name: string;
   snippet: string; // | marks cursor position
@@ -613,12 +901,85 @@ const functionGroups: FnGroup[] = [
 
 const textareaEl = ref<HTMLTextAreaElement | null>(null);
 
+interface AcItem {
+  value: string;
+  label: string;
+  type: string;
+  hint?: string;
+  returnType?: string;
+  snippet?: string;
+}
+
 const ac = reactive({
   show: false,
-  items: [] as Array<{ value: string; label: string; type: string }>,
+  mode: 'field' as 'field' | 'function',
+  items: [] as AcItem[],
   index: 0,
   start: 0,
 });
+
+/* ─── Signature Help state ─── */
+
+const sig = reactive({
+  show: false,
+  fn: null as FnSignature | null,
+  paramIndex: 0,
+});
+
+function findCurrentFunction(text: string, pos: number): { name: string; paramIndex: number } | null {
+  let depth = 0;
+  let paramIndex = 0;
+  let inStr = false;
+  let strChar = '';
+
+  for (let i = pos - 1; i >= 0; i--) {
+    const ch = text[i]!;
+
+    if (inStr) {
+      if (ch === strChar) inStr = false;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inStr = true;
+      strChar = ch;
+      continue;
+    }
+
+    if (ch === ')') { depth++; continue; }
+    if (ch === '(') {
+      if (depth === 0) {
+        const before = text.slice(0, i);
+        const match = before.match(/\b([A-Z_]+)\s*$/i);
+        if (match) {
+          return { name: match[1]!.toUpperCase(), paramIndex };
+        }
+        return null;
+      }
+      depth--;
+      continue;
+    }
+    if (ch === ',' && depth === 0) { paramIndex++; }
+  }
+  return null;
+}
+
+function checkSignatureHelp() {
+  const el = textareaEl.value;
+  if (!el) { sig.show = false; return; }
+
+  const pos = el.selectionStart;
+  const text = formula.value.slice(0, pos);
+  const ctx = findCurrentFunction(text, text.length);
+
+  if (ctx && FUNCTION_SIGNATURES[ctx.name]) {
+    sig.fn = FUNCTION_SIGNATURES[ctx.name]!;
+    sig.paramIndex = Math.min(ctx.paramIndex, sig.fn.params.length - 1);
+    sig.show = true;
+  } else {
+    sig.show = false;
+    sig.fn = null;
+  }
+}
 
 function checkAutocomplete() {
   const el = textareaEl.value;
@@ -632,11 +993,11 @@ function checkAutocomplete() {
   const lastOpen = text.lastIndexOf("{{");
   const lastClose = text.lastIndexOf("}}");
 
+  // Mode 1: Field autocomplete (inside {{ }})
   if (lastOpen >= 0 && lastOpen > lastClose) {
     const partial = text.slice(lastOpen + 2).toLowerCase();
 
-    // Local fields (formula fields tagged distinctly)
-    const localMatches = collectionFields.value
+    const localMatches: AcItem[] = collectionFields.value
       .filter((f) => f.field.toLowerCase().includes(partial))
       .map((f) => ({
         value: f.field,
@@ -644,8 +1005,7 @@ function checkAutocomplete() {
         type: f.isFormula ? "formula" : f.type,
       }));
 
-    // Relational fields (dotted: e.g. "category.name")
-    const relMatches: typeof localMatches = [];
+    const relMatches: AcItem[] = [];
     for (const group of relationalFields.value) {
       for (const f of group.fields) {
         const dotted = `${group.localField}.${f.field}`;
@@ -662,60 +1022,115 @@ function checkAutocomplete() {
     ac.items = [...localMatches, ...relMatches];
     ac.index = 0;
     ac.start = lastOpen;
-    ac.show = true;
-  } else {
-    ac.show = false;
+    ac.mode = 'field';
+    ac.show = ac.items.length > 0;
+    return;
   }
+
+  // Mode 2: Function autocomplete (typing a word that could be a function)
+  const wordMatch = text.match(/\b([A-Z_]{1,}[A-Z0-9_]*)$/i);
+  if (wordMatch && wordMatch[1]!.length >= 1) {
+    const partial = wordMatch[1]!.toUpperCase();
+    const wordStart = pos - wordMatch[1]!.length;
+
+    // Don't show function autocomplete if we're inside a {{ }} context or if the word is already followed by (
+    const afterCursor = formula.value.slice(pos);
+    const nextNonSpace = afterCursor.match(/^\s*(\S)/);
+    const alreadyHasParen = nextNonSpace && nextNonSpace[1] === '(';
+
+    const matches: AcItem[] = Object.values(FUNCTION_SIGNATURES)
+      .filter((fn) => fn.name.startsWith(partial) && fn.name !== partial)
+      .map((fn) => ({
+        value: fn.name,
+        label: fn.name,
+        type: 'function',
+        hint: fn.description,
+        returnType: fn.returnType,
+        snippet: fn.params.length === 0 ? `${fn.name}()` : `${fn.name}(`,
+      }));
+
+    if (matches.length > 0 && !alreadyHasParen) {
+      ac.items = matches;
+      ac.index = 0;
+      ac.start = wordStart;
+      ac.mode = 'function';
+      ac.show = true;
+      return;
+    }
+  }
+
+  ac.show = false;
 }
 
-function pickAutocomplete(item: { value: string }) {
+function pickAutocomplete(item: AcItem) {
   const el = textareaEl.value;
   if (!el) return;
 
   const pos = el.selectionStart;
   const text = formula.value;
-  const replacement = `{{${item.value}}}`;
-  const newText = text.slice(0, ac.start) + replacement + text.slice(pos);
 
-  updateOption("formula", newText);
-  ac.show = false;
+  if (ac.mode === 'field') {
+    const replacement = `{{${item.value}}}`;
+    const newText = text.slice(0, ac.start) + replacement + text.slice(pos);
+    updateOption("formula", newText);
+    ac.show = false;
 
-  const newPos = ac.start + replacement.length;
-  nextTick(() => {
-    el.focus();
-    el.setSelectionRange(newPos, newPos);
-  });
+    const newPos = ac.start + replacement.length;
+    nextTick(() => {
+      el.focus();
+      el.setSelectionRange(newPos, newPos);
+    });
+  } else {
+    // Function mode
+    const insertion = item.snippet ?? `${item.value}(`;
+    const newText = text.slice(0, ac.start) + insertion + text.slice(pos);
+    updateOption("formula", newText);
+    ac.show = false;
+
+    const newPos = ac.start + insertion.length;
+    nextTick(() => {
+      el.focus();
+      el.setSelectionRange(newPos, newPos);
+      checkSignatureHelp();
+    });
+  }
 }
 
 function onEditorBlur() {
   setTimeout(() => {
     ac.show = false;
+    sig.show = false;
   }, 150);
 }
 
 /* ─── Keyboard handling ─── */
 
 function onEditorKeydown(e: KeyboardEvent) {
-  if (!ac.show || ac.items.length === 0) return;
+  if (ac.show && ac.items.length > 0) {
+    switch (e.key) {
+      case "ArrowDown":
+        e.preventDefault();
+        ac.index = Math.min(ac.index + 1, ac.items.length - 1);
+        return;
+      case "ArrowUp":
+        e.preventDefault();
+        ac.index = Math.max(ac.index - 1, 0);
+        return;
+      case "Enter":
+      case "Tab":
+        e.preventDefault();
+        pickAutocomplete(ac.items[ac.index]!);
+        return;
+      case "Escape":
+        e.preventDefault();
+        ac.show = false;
+        return;
+    }
+  }
 
-  switch (e.key) {
-    case "ArrowDown":
-      e.preventDefault();
-      ac.index = Math.min(ac.index + 1, ac.items.length - 1);
-      break;
-    case "ArrowUp":
-      e.preventDefault();
-      ac.index = Math.max(ac.index - 1, 0);
-      break;
-    case "Enter":
-    case "Tab":
-      e.preventDefault();
-      pickAutocomplete(ac.items[ac.index]!);
-      break;
-    case "Escape":
-      e.preventDefault();
-      ac.show = false;
-      break;
+  if (sig.show && e.key === "Escape") {
+    e.preventDefault();
+    sig.show = false;
   }
 }
 
@@ -724,7 +1139,10 @@ function onEditorKeydown(e: KeyboardEvent) {
 function onFormulaInput(e: Event) {
   const val = (e.target as HTMLTextAreaElement).value;
   updateOption("formula", val);
-  nextTick(checkAutocomplete);
+  nextTick(() => {
+    checkAutocomplete();
+    checkSignatureHelp();
+  });
 }
 
 /* ─── Insert at cursor ─── */
@@ -1128,10 +1546,26 @@ function fieldTypeIcon(type: string): string {
   background: var(--theme--background-accent);
 }
 
+.ac-item-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+}
+
 .ac-name {
   font-weight: 500;
   color: var(--theme--foreground);
   font-family: var(--theme--fonts--monospace--font-family, monospace);
+}
+
+.ac-hint {
+  font-size: 11px;
+  color: var(--theme--foreground-subdued);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .ac-type {
@@ -1139,6 +1573,126 @@ function fieldTypeIcon(type: string): string {
   font-size: 11px;
   color: var(--theme--foreground-subdued);
   text-transform: lowercase;
+  white-space: nowrap;
+  padding-left: 8px;
+}
+
+/* ─── Signature Help ─── */
+
+.sig-help {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  z-index: 101;
+  background: var(--theme--background);
+  border: var(--theme--border-width) solid var(--theme--border-color);
+  border-radius: var(--theme--border-radius);
+  box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.12);
+  padding: 10px 14px;
+  margin-bottom: 4px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.sig-help-signature {
+  font-family: var(--theme--fonts--monospace--font-family, monospace);
+  font-size: 13px;
+  color: var(--theme--foreground);
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0;
+}
+
+.sig-fn-name {
+  font-weight: 700;
+  color: var(--theme--primary);
+}
+
+.sig-paren {
+  color: var(--theme--foreground-subdued);
+}
+
+.sig-comma {
+  color: var(--theme--foreground-subdued);
+}
+
+.sig-param {
+  color: var(--theme--foreground-subdued);
+  transition: all 0.15s;
+}
+
+.sig-param--active {
+  color: var(--theme--foreground);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--theme--primary);
+}
+
+.sig-optional-mark {
+  color: var(--theme--foreground-subdued);
+  opacity: 0.6;
+}
+
+.sig-return {
+  margin-left: 8px;
+  font-size: 11px;
+  color: var(--theme--foreground-subdued);
+  font-weight: 400;
+}
+
+.sig-help-detail {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--theme--foreground);
+  padding: 4px 8px;
+  background: var(--theme--background-subdued);
+  border-radius: 4px;
+}
+
+.sig-help-detail strong {
+  font-family: var(--theme--fonts--monospace--font-family, monospace);
+  color: var(--theme--primary);
+}
+
+.sig-optional-badge {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 1px 5px;
+  margin-left: 4px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--theme--warning) 15%, transparent);
+  color: var(--theme--warning);
+}
+
+.sig-help-desc {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--theme--foreground-subdued);
+  font-style: italic;
+}
+
+.sig-help-example {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--theme--foreground-subdued);
+}
+
+.sig-example-label {
+  font-weight: 600;
+  margin-right: 4px;
+}
+
+.sig-help-example code {
+  font-family: var(--theme--fonts--monospace--font-family, monospace);
+  background: var(--theme--background-subdued);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 11px;
 }
 
 .ac-fade-enter-active,

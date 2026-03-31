@@ -1,6 +1,6 @@
 {
   "name": "directus-extension-queryable-formula",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "Formula field that stores computed values in DB for querying",
   "icon": "extension",
   "license": "MIT",
@@ -47,7 +47,10 @@
     "dev": "directus-extension build -w --no-minify",
     "link": "directus-extension link",
     "validate": "directus-extension validate",
-    "add": "directus-extension add"
+    "add": "directus-extension add",
+    "test:setup": "bash test-env/setup.sh",
+    "test:start": "bash test-env/start.sh",
+    "test:reset": "bash test-env/reset.sh"
   },
   "devDependencies": {
     "@directus/extensions-sdk": "17.0.10",
