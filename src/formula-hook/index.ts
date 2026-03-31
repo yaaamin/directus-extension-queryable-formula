@@ -274,7 +274,7 @@ export default (
       const previous = result;
 
       result = result.replace(
-        /CONCAT\(([^()]*)\)/gi,
+        /\bCONCAT\(([^()]*)\)/gi,
         (_m: string, args: string) => {
           const parts = splitArgs(args);
           const joined = parts
@@ -292,7 +292,7 @@ export default (
       );
 
       result = result.replace(
-        /UPPER\(([^()]*)\)/gi,
+        /\bUPPER\(([^()]*)\)/gi,
         (_m: string, arg: string) => {
           const val = String(safeEval(arg.trim()));
           return JSON.stringify(val.toUpperCase());
@@ -300,7 +300,7 @@ export default (
       );
 
       result = result.replace(
-        /LOWER\(([^()]*)\)/gi,
+        /\bLOWER\(([^()]*)\)/gi,
         (_m: string, arg: string) => {
           const val = String(safeEval(arg.trim()));
           return JSON.stringify(val.toLowerCase());
@@ -308,7 +308,7 @@ export default (
       );
 
       result = result.replace(
-        /TRIM\(([^()]*)\)/gi,
+        /\bTRIM\(([^()]*)\)/gi,
         (_m: string, arg: string) => {
           const val = String(safeEval(arg.trim()));
           return JSON.stringify(val.trim());
@@ -316,7 +316,7 @@ export default (
       );
 
       result = result.replace(
-        /ROUND\(([^()]*)\)/gi,
+        /\bROUND\(([^()]*)\)/gi,
         (_m: string, args: string) => {
           const parts = splitArgs(args);
           const num = Number(safeEval(parts[0]!.trim()));
@@ -326,21 +326,21 @@ export default (
       );
 
       result = result.replace(
-        /FLOOR\(([^()]*)\)/gi,
+        /\bFLOOR\(([^()]*)\)/gi,
         (_m: string, arg: string) => {
           return String(Math.floor(Number(safeEval(arg.trim()))));
         },
       );
 
       result = result.replace(
-        /CEIL\(([^()]*)\)/gi,
+        /\bCEIL\(([^()]*)\)/gi,
         (_m: string, arg: string) => {
           return String(Math.ceil(Number(safeEval(arg.trim()))));
         },
       );
 
       result = result.replace(
-        /IF\(([^()]*)\)/gi,
+        /\bIF\(([^()]*)\)/gi,
         (_m: string, args: string) => {
           const parts = splitArgs(args);
           if (parts.length < 3) return "null";
@@ -352,7 +352,7 @@ export default (
       );
 
       result = result.replace(
-        /COALESCE\(([^()]*)\)/gi,
+        /\bCOALESCE\(([^()]*)\)/gi,
         (_m: string, args: string) => {
           const parts = splitArgs(args);
           for (const part of parts) {
@@ -367,7 +367,7 @@ export default (
         },
       );
 
-      result = result.replace(/NOW\(\)/gi, () =>
+      result = result.replace(/\bNOW\(\)/gi, () =>
         JSON.stringify(new Date().toISOString()),
       );
 

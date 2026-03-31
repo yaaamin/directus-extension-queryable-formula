@@ -69,7 +69,7 @@ export default (router: any, context: EndpointExtensionContext) => {
       const previous = result;
 
       result = result.replace(
-        /CONCAT\(([^()]*)\)/gi,
+        /\bCONCAT\(([^()]*)\)/gi,
         (_m: string, args: string) => {
           const parts = splitArgs(args);
           const joined = parts
@@ -87,7 +87,7 @@ export default (router: any, context: EndpointExtensionContext) => {
       );
 
       result = result.replace(
-        /UPPER\(([^()]*)\)/gi,
+        /\bUPPER\(([^()]*)\)/gi,
         (_m: string, arg: string) => {
           const val = String(safeEval(arg.trim()));
           return JSON.stringify(val.toUpperCase());
@@ -95,7 +95,7 @@ export default (router: any, context: EndpointExtensionContext) => {
       );
 
       result = result.replace(
-        /LOWER\(([^()]*)\)/gi,
+        /\bLOWER\(([^()]*)\)/gi,
         (_m: string, arg: string) => {
           const val = String(safeEval(arg.trim()));
           return JSON.stringify(val.toLowerCase());
@@ -103,7 +103,7 @@ export default (router: any, context: EndpointExtensionContext) => {
       );
 
       result = result.replace(
-        /TRIM\(([^()]*)\)/gi,
+        /\bTRIM\(([^()]*)\)/gi,
         (_m: string, arg: string) => {
           const val = String(safeEval(arg.trim()));
           return JSON.stringify(val.trim());
@@ -111,7 +111,7 @@ export default (router: any, context: EndpointExtensionContext) => {
       );
 
       result = result.replace(
-        /ROUND\(([^()]*)\)/gi,
+        /\bROUND\(([^()]*)\)/gi,
         (_m: string, args: string) => {
           const parts = splitArgs(args);
           const num = Number(safeEval(parts[0]!.trim()));
@@ -121,17 +121,17 @@ export default (router: any, context: EndpointExtensionContext) => {
       );
 
       result = result.replace(
-        /FLOOR\(([^()]*)\)/gi,
+        /\bFLOOR\(([^()]*)\)/gi,
         (_m: string, arg: string) =>
           String(Math.floor(Number(safeEval(arg.trim())))),
       );
 
-      result = result.replace(/CEIL\(([^()]*)\)/gi, (_m: string, arg: string) =>
+      result = result.replace(/\bCEIL\(([^()]*)\)/gi, (_m: string, arg: string) =>
         String(Math.ceil(Number(safeEval(arg.trim())))),
       );
 
       result = result.replace(
-        /IF\(([^()]*)\)/gi,
+        /\bIF\(([^()]*)\)/gi,
         (_m: string, args: string) => {
           const parts = splitArgs(args);
           if (parts.length < 3) return "null";
@@ -143,7 +143,7 @@ export default (router: any, context: EndpointExtensionContext) => {
       );
 
       result = result.replace(
-        /COALESCE\(([^()]*)\)/gi,
+        /\bCOALESCE\(([^()]*)\)/gi,
         (_m: string, args: string) => {
           const parts = splitArgs(args);
           for (const part of parts) {
@@ -158,7 +158,7 @@ export default (router: any, context: EndpointExtensionContext) => {
         },
       );
 
-      result = result.replace(/NOW\(\)/gi, () =>
+      result = result.replace(/\bNOW\(\)/gi, () =>
         JSON.stringify(new Date().toISOString()),
       );
 
