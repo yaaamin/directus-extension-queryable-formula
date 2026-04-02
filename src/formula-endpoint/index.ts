@@ -62,421 +62,365 @@ export default (router: any, context: EndpointExtensionContext) => {
   }
 
   function processFunctions(expr: string): string {
-    let result = expr;
-    let maxIterations = 50;
-
-    while (maxIterations-- > 0) {
-      const previous = result;
-
-      result = result.replace(
-        /\bCONCAT\(([^()]*)\)/gi,
-        (_m: string, args: string) => {
-          const parts = splitArgs(args);
-          const joined = parts
-            .map((p) => {
-              const trimmed = p.trim();
-              try {
-                return String(safeEval(trimmed));
-              } catch {
-                return trimmed.replace(/^"|"$/g, "");
-              }
-            })
-            .join("");
-          return JSON.stringify(joined);
-        },
-      );
-
-      result = result.replace(
-        /\bUPPER\(([^()]*)\)/gi,
-        (_m: string, arg: string) => {
-          const val = String(safeEval(arg.trim()));
-          return JSON.stringify(val.toUpperCase());
-        },
-      );
-
-      result = result.replace(
-        /\bLOWER\(([^()]*)\)/gi,
-        (_m: string, arg: string) => {
-          const val = String(safeEval(arg.trim()));
-          return JSON.stringify(val.toLowerCase());
-        },
-      );
-
-      result = result.replace(
-        /\bTRIM\(([^()]*)\)/gi,
-        (_m: string, arg: string) => {
-          const val = String(safeEval(arg.trim()));
-          return JSON.stringify(val.trim());
-        },
-      );
-
-      result = result.replace(
-        /\bROUND\(([^()]*)\)/gi,
-        (_m: string, args: string) => {
-          const parts = splitArgs(args);
-          const num = Number(safeEval(parts[0]!.trim()));
-          const decimals = parts[1] ? Number(safeEval(parts[1].trim())) : 0;
-          return String(Math.round(num * 10 ** decimals) / 10 ** decimals);
-        },
-      );
-
-      result = result.replace(
-        /\bFLOOR\(([^()]*)\)/gi,
-        (_m: string, arg: string) =>
-          String(Math.floor(Number(safeEval(arg.trim())))),
-      );
-
-      result = result.replace(/\bCEIL\(([^()]*)\)/gi, (_m: string, arg: string) =>
-        String(Math.ceil(Number(safeEval(arg.trim())))),
-      );
-
-      result = result.replace(
-        /\bIF\(([^()]*)\)/gi,
-        (_m: string, args: string) => {
-          const parts = splitArgs(args);
-          if (parts.length < 3) return "null";
-          const cond = safeEval(parts[0]!.trim());
-          return cond
-            ? String(safeEval(parts[1]!.trim()))
-            : String(safeEval(parts[2]!.trim()));
-        },
-      );
-
-      result = result.replace(
-        /\bCOALESCE\(([^()]*)\)/gi,
-        (_m: string, args: string) => {
-          const parts = splitArgs(args);
-          for (const part of parts) {
-            const val = safeEval(part.trim());
-            if (val !== null && val !== undefined && val !== "null") {
-              return typeof val === "string"
-                ? JSON.stringify(val)
-                : String(val);
+    const functionHandlers: Record<string, (args: string) => string> = {
+      CONCAT: (args: string) => {
+        const parts = splitArgs(args);
+        const joined = parts
+          .map((p) => {
+            const trimmed = p.trim();
+            try {
+              return String(safeEval(trimmed));
+            } catch {
+              return trimmed.replace(/^"|"$/g, "");
             }
+          })
+          .join("");
+        return JSON.stringify(joined);
+      },
+      UPPER: (args: string) =>
+        JSON.stringify(String(safeEval(args.trim())).toUpperCase()),
+      LOWER: (args: string) =>
+        JSON.stringify(String(safeEval(args.trim())).toLowerCase()),
+      TRIM: (args: string) =>
+        JSON.stringify(String(safeEval(args.trim())).trim()),
+      ROUND: (args: string) => {
+        const parts = splitArgs(args);
+        const num = Number(safeEval(parts[0]!.trim()));
+        const decimals = parts[1] ? Number(safeEval(parts[1].trim())) : 0;
+        return String(Math.round(num * 10 ** decimals) / 10 ** decimals);
+      },
+      FLOOR: (args: string) =>
+        String(Math.floor(Number(safeEval(args.trim())))),
+      CEIL: (args: string) =>
+        String(Math.ceil(Number(safeEval(args.trim())))),
+      IF: (args: string) => {
+        const parts = splitArgs(args);
+        if (parts.length < 3) return "null";
+        const cond = safeEval(parts[0]!.trim());
+        const val = cond
+          ? safeEval(parts[1]!.trim())
+          : safeEval(parts[2]!.trim());
+        return serializeFormulaValue(val);
+      },
+      COALESCE: (args: string) => {
+        const parts = splitArgs(args);
+        for (const part of parts) {
+          const val = safeEval(part.trim());
+          if (val !== null && val !== undefined && val !== "null") {
+            return serializeFormulaValue(val);
           }
-          return "null";
-        },
-      );
-
-      result = result.replace(/\bNOW\(\)/gi, () =>
-        JSON.stringify(new Date().toISOString()),
-      );
-
-      // ── Date Creation ──────────────────────────────────
-
-      result = result.replace(/\bTODAY\(\)/gi, () => {
+        }
+        return "null";
+      },
+      NOW: () => JSON.stringify(new Date().toISOString()),
+      TODAY: () => {
         const now = new Date();
         return JSON.stringify(now.toISOString().split("T")[0]);
-      });
-
-      result = result.replace(
-        /\bDATE\(([^()]*)\)/gi,
-        (_m: string, args: string) => {
-          const parts = splitArgs(args);
-          if (parts.length < 3) return "null";
-          const y = Number(safeEval(parts[0]!.trim()));
-          const mo = Number(safeEval(parts[1]!.trim()));
-          const dy = Number(safeEval(parts[2]!.trim()));
-          if (isNaN(y) || isNaN(mo) || isNaN(dy)) return "null";
-          const dt = new Date(y, mo - 1, dy);
-          return JSON.stringify(dt.toISOString().split("T")[0]);
-        },
-      );
-
-      result = result.replace(
-        /\bDATEVALUE\(([^()]*)\)/gi,
-        (_m: string, arg: string) => {
-          const d = parseDateValue(safeEval(arg.trim()));
-          if (!d) return "null";
-          return JSON.stringify(d.toISOString().split("T")[0]);
-        },
-      );
-
-      result = result.replace(
-        /\bTIME\(([^()]*)\)/gi,
-        (_m: string, args: string) => {
-          const parts = splitArgs(args);
-          if (parts.length < 3) return "null";
-          const h = Number(safeEval(parts[0]!.trim()));
-          const mi = Number(safeEval(parts[1]!.trim()));
-          const sc = Number(safeEval(parts[2]!.trim()));
-          if (isNaN(h) || isNaN(mi) || isNaN(sc)) return "null";
-          return JSON.stringify(
-            `${String(h).padStart(2, "0")}:${String(mi).padStart(2, "0")}:${String(sc).padStart(2, "0")}`,
-          );
-        },
-      );
-
-      result = result.replace(
-        /\bTIMEVALUE\(([^()]*)\)/gi,
-        (_m: string, arg: string) => {
-          const d = parseDateValue(safeEval(arg.trim()));
-          if (!d) return "null";
-          return JSON.stringify(
-            d.toISOString().split("T")[1]!.split(".")[0],
-          );
-        },
-      );
-
-      // ── Date Extraction ────────────────────────────────
-
-      result = result.replace(
-        /\bYEAR\(([^()]*)\)/gi,
-        (_m: string, arg: string) => {
-          const d = parseDateValue(safeEval(arg.trim()));
-          return d ? String(d.getFullYear()) : "null";
-        },
-      );
-
-      result = result.replace(
-        /\bMONTH\(([^()]*)\)/gi,
-        (_m: string, arg: string) => {
-          const d = parseDateValue(safeEval(arg.trim()));
-          return d ? String(d.getMonth() + 1) : "null";
-        },
-      );
-
-      result = result.replace(
-        /\bDAY\(([^()]*)\)/gi,
-        (_m: string, arg: string) => {
-          const d = parseDateValue(safeEval(arg.trim()));
-          return d ? String(d.getDate()) : "null";
-        },
-      );
-
-      result = result.replace(
-        /\bHOUR\(([^()]*)\)/gi,
-        (_m: string, arg: string) => {
-          const d = parseDateValue(safeEval(arg.trim()));
-          return d ? String(d.getHours()) : "null";
-        },
-      );
-
-      result = result.replace(
-        /\bMINUTE\(([^()]*)\)/gi,
-        (_m: string, arg: string) => {
-          const d = parseDateValue(safeEval(arg.trim()));
-          return d ? String(d.getMinutes()) : "null";
-        },
-      );
-
-      result = result.replace(
-        /\bSECOND\(([^()]*)\)/gi,
-        (_m: string, arg: string) => {
-          const d = parseDateValue(safeEval(arg.trim()));
-          return d ? String(d.getSeconds()) : "null";
-        },
-      );
-
-      result = result.replace(
-        /\bWEEKDAY\(([^()]*)\)/gi,
-        (_m: string, args: string) => {
-          const parts = splitArgs(args);
-          const d = parseDateValue(safeEval(parts[0]!.trim()));
-          if (!d) return "null";
-          const type = parts[1]
-            ? Number(safeEval(parts[1].trim()))
-            : 1;
-          const jsDay = d.getDay(); // 0=Sun, 6=Sat
-          if (type === 2) return String(jsDay === 0 ? 7 : jsDay);
-          if (type === 3)
-            return String(jsDay === 0 ? 6 : jsDay - 1);
-          return String(jsDay + 1); // type 1: Sun=1..Sat=7
-        },
-      );
-
-      result = result.replace(
-        /\bISOWEEKNUM\(([^()]*)\)/gi,
-        (_m: string, arg: string) => {
-          const d = parseDateValue(safeEval(arg.trim()));
-          if (!d) return "null";
-          const target = new Date(d.getTime());
-          target.setHours(0, 0, 0, 0);
-          target.setDate(
-            target.getDate() + 3 - ((target.getDay() + 6) % 7),
-          );
-          const jan4 = new Date(target.getFullYear(), 0, 4);
-          return String(
-            1 +
-              Math.round(
-                ((target.getTime() - jan4.getTime()) / 86400000 -
-                  3 +
-                  ((jan4.getDay() + 6) % 7)) /
-                  7,
-              ),
-          );
-        },
-      );
-
-      result = result.replace(
-        /\bWEEKNUM\(([^()]*)\)/gi,
-        (_m: string, args: string) => {
-          const parts = splitArgs(args);
-          const d = parseDateValue(safeEval(parts[0]!.trim()));
-          if (!d) return "null";
-          const type = parts[1]
-            ? Number(safeEval(parts[1].trim()))
-            : 1;
-          const startOfYear = new Date(d.getFullYear(), 0, 1);
-          const diffMs = d.getTime() - startOfYear.getTime();
-          const diffDays = Math.floor(diffMs / 86400000);
-          const startDay =
-            type === 2
-              ? (startOfYear.getDay() + 6) % 7
-              : startOfYear.getDay();
-          return String(
-            Math.ceil((diffDays + startDay + 1) / 7),
-          );
-        },
-      );
-
-      // ── Date Arithmetic ────────────────────────────────
-
-      result = result.replace(
-        /\bDATEDIF\(([^()]*)\)/gi,
-        (_m: string, args: string) => {
-          const parts = splitArgs(args);
-          if (parts.length < 3) return "null";
-          const start = parseDateValue(safeEval(parts[0]!.trim()));
-          const end = parseDateValue(safeEval(parts[1]!.trim()));
-          if (!start || !end) return "null";
-          const unit = String(
-            safeEval(parts[2]!.trim()),
-          ).toUpperCase();
-          if (unit === "D") {
-            return String(
-              Math.floor(
-                (end.getTime() - start.getTime()) / 86400000,
-              ),
-            );
-          }
-          if (unit === "M") {
-            return String(
-              (end.getFullYear() - start.getFullYear()) * 12 +
-                (end.getMonth() - start.getMonth()),
-            );
-          }
-          if (unit === "Y") {
-            let years =
-              end.getFullYear() - start.getFullYear();
-            if (
-              end.getMonth() < start.getMonth() ||
-              (end.getMonth() === start.getMonth() &&
-                end.getDate() < start.getDate())
-            ) {
-              years--;
-            }
-            return String(years);
-          }
-          if (unit === "YM") {
-            let months =
-              end.getMonth() - start.getMonth();
-            if (end.getDate() < start.getDate()) months--;
-            if (months < 0) months += 12;
-            return String(months);
-          }
-          if (unit === "MD") {
-            let days = end.getDate() - start.getDate();
-            if (days < 0) {
-              const prevMonth = new Date(
-                end.getFullYear(),
-                end.getMonth(),
-                0,
-              );
-              days += prevMonth.getDate();
-            }
-            return String(days);
-          }
-          if (unit === "YD") {
-            const adjStart = new Date(
-              end.getFullYear(),
-              start.getMonth(),
-              start.getDate(),
-            );
-            let diff = Math.floor(
-              (end.getTime() - adjStart.getTime()) / 86400000,
-            );
-            if (diff < 0) diff += 365;
-            return String(diff);
-          }
-          return "null";
-        },
-      );
-
-      result = result.replace(
-        /\bDAYS\(([^()]*)\)/gi,
-        (_m: string, args: string) => {
-          const parts = splitArgs(args);
-          if (parts.length < 2) return "null";
-          const endD = parseDateValue(
-            safeEval(parts[0]!.trim()),
-          );
-          const startD = parseDateValue(
-            safeEval(parts[1]!.trim()),
-          );
-          if (!endD || !startD) return "null";
-          return String(
-            Math.floor(
-              (endD.getTime() - startD.getTime()) / 86400000,
+      },
+      DATE: (args: string) => {
+        const parts = splitArgs(args);
+        if (parts.length < 3) return "null";
+        const y = Number(safeEval(parts[0]!.trim()));
+        const mo = Number(safeEval(parts[1]!.trim()));
+        const dy = Number(safeEval(parts[2]!.trim()));
+        if (isNaN(y) || isNaN(mo) || isNaN(dy)) return "null";
+        const dt = new Date(y, mo - 1, dy);
+        return JSON.stringify(dt.toISOString().split("T")[0]);
+      },
+      DATEVALUE: (args: string) => {
+        const d = parseDateValue(safeEval(args.trim()));
+        if (!d) return "null";
+        return JSON.stringify(d.toISOString().split("T")[0]);
+      },
+      TIME: (args: string) => {
+        const parts = splitArgs(args);
+        if (parts.length < 3) return "null";
+        const h = Number(safeEval(parts[0]!.trim()));
+        const mi = Number(safeEval(parts[1]!.trim()));
+        const sc = Number(safeEval(parts[2]!.trim()));
+        if (isNaN(h) || isNaN(mi) || isNaN(sc)) return "null";
+        return JSON.stringify(
+          `${String(h).padStart(2, "0")}:${String(mi).padStart(2, "0")}:${String(sc).padStart(2, "0")}`,
+        );
+      },
+      TIMEVALUE: (args: string) => {
+        const d = parseDateValue(safeEval(args.trim()));
+        if (!d) return "null";
+        return JSON.stringify(
+          d.toISOString().split("T")[1]!.split(".")[0],
+        );
+      },
+      YEAR: (args: string) => {
+        const d = parseDateValue(safeEval(args.trim()));
+        return d ? String(d.getFullYear()) : "null";
+      },
+      MONTH: (args: string) => {
+        const d = parseDateValue(safeEval(args.trim()));
+        return d ? String(d.getMonth() + 1) : "null";
+      },
+      DAY: (args: string) => {
+        const d = parseDateValue(safeEval(args.trim()));
+        return d ? String(d.getDate()) : "null";
+      },
+      HOUR: (args: string) => {
+        const d = parseDateValue(safeEval(args.trim()));
+        return d ? String(d.getHours()) : "null";
+      },
+      MINUTE: (args: string) => {
+        const d = parseDateValue(safeEval(args.trim()));
+        return d ? String(d.getMinutes()) : "null";
+      },
+      SECOND: (args: string) => {
+        const d = parseDateValue(safeEval(args.trim()));
+        return d ? String(d.getSeconds()) : "null";
+      },
+      WEEKDAY: (args: string) => {
+        const parts = splitArgs(args);
+        const d = parseDateValue(safeEval(parts[0]!.trim()));
+        if (!d) return "null";
+        const type = parts[1] ? Number(safeEval(parts[1].trim())) : 1;
+        const jsDay = d.getDay();
+        if (type === 2) return String(jsDay === 0 ? 7 : jsDay);
+        if (type === 3) return String(jsDay === 0 ? 6 : jsDay - 1);
+        return String(jsDay + 1);
+      },
+      ISOWEEKNUM: (args: string) => {
+        const d = parseDateValue(safeEval(args.trim()));
+        if (!d) return "null";
+        const target = new Date(d.getTime());
+        target.setHours(0, 0, 0, 0);
+        target.setDate(target.getDate() + 3 - ((target.getDay() + 6) % 7));
+        const jan4 = new Date(target.getFullYear(), 0, 4);
+        return String(
+          1 +
+            Math.round(
+              ((target.getTime() - jan4.getTime()) / 86400000 -
+                3 +
+                ((jan4.getDay() + 6) % 7)) /
+                7,
             ),
+        );
+      },
+      WEEKNUM: (args: string) => {
+        const parts = splitArgs(args);
+        const d = parseDateValue(safeEval(parts[0]!.trim()));
+        if (!d) return "null";
+        const type = parts[1] ? Number(safeEval(parts[1].trim())) : 1;
+        const startOfYear = new Date(d.getFullYear(), 0, 1);
+        const diffMs = d.getTime() - startOfYear.getTime();
+        const diffDays = Math.floor(diffMs / 86400000);
+        const startDay =
+          type === 2 ? (startOfYear.getDay() + 6) % 7 : startOfYear.getDay();
+        return String(Math.ceil((diffDays + startDay + 1) / 7));
+      },
+      DATEDIF: (args: string) => {
+        const parts = splitArgs(args);
+        if (parts.length < 3) return "null";
+        const start = parseDateValue(safeEval(parts[0]!.trim()));
+        const end = parseDateValue(safeEval(parts[1]!.trim()));
+        if (!start || !end) return "null";
+        const unit = String(safeEval(parts[2]!.trim())).toUpperCase();
+        if (unit === "D") {
+          return String(
+            Math.floor((end.getTime() - start.getTime()) / 86400000),
           );
-        },
-      );
+        }
+        if (unit === "M") {
+          return String(
+            (end.getFullYear() - start.getFullYear()) * 12 +
+              (end.getMonth() - start.getMonth()),
+          );
+        }
+        if (unit === "Y") {
+          let years = end.getFullYear() - start.getFullYear();
+          if (
+            end.getMonth() < start.getMonth() ||
+            (end.getMonth() === start.getMonth() &&
+              end.getDate() < start.getDate())
+          ) {
+            years--;
+          }
+          return String(years);
+        }
+        if (unit === "YM") {
+          let months = end.getMonth() - start.getMonth();
+          if (end.getDate() < start.getDate()) months--;
+          if (months < 0) months += 12;
+          return String(months);
+        }
+        if (unit === "MD") {
+          let days = end.getDate() - start.getDate();
+          if (days < 0) {
+            const prevMonth = new Date(end.getFullYear(), end.getMonth(), 0);
+            days += prevMonth.getDate();
+          }
+          return String(days);
+        }
+        if (unit === "YD") {
+          const adjStart = new Date(
+            end.getFullYear(),
+            start.getMonth(),
+            start.getDate(),
+          );
+          let diff = Math.floor(
+            (end.getTime() - adjStart.getTime()) / 86400000,
+          );
+          if (diff < 0) diff += 365;
+          return String(diff);
+        }
+        return "null";
+      },
+      DAYS: (args: string) => {
+        const parts = splitArgs(args);
+        if (parts.length < 2) return "null";
+        const endD = parseDateValue(safeEval(parts[0]!.trim()));
+        const startD = parseDateValue(safeEval(parts[1]!.trim()));
+        if (!endD || !startD) return "null";
+        return String(
+          Math.floor((endD.getTime() - startD.getTime()) / 86400000),
+        );
+      },
+      EDATE: (args: string) => {
+        const parts = splitArgs(args);
+        if (parts.length < 2) return "null";
+        const d = parseDateValue(safeEval(parts[0]!.trim()));
+        if (!d) return "null";
+        const months = Number(safeEval(parts[1]!.trim()));
+        if (isNaN(months)) return "null";
+        const nd = new Date(d);
+        nd.setMonth(nd.getMonth() + months);
+        return JSON.stringify(nd.toISOString().split("T")[0]);
+      },
+      EOMONTH: (args: string) => {
+        const parts = splitArgs(args);
+        if (parts.length < 2) return "null";
+        const d = parseDateValue(safeEval(parts[0]!.trim()));
+        if (!d) return "null";
+        const months = Number(safeEval(parts[1]!.trim()));
+        if (isNaN(months)) return "null";
+        const eom = new Date(d.getFullYear(), d.getMonth() + months + 1, 0);
+        return JSON.stringify(eom.toISOString().split("T")[0]);
+      },
+      NETWORKDAYS: (args: string) => {
+        const parts = splitArgs(args);
+        if (parts.length < 2) return "null";
+        const startD = parseDateValue(safeEval(parts[0]!.trim()));
+        const endD = parseDateValue(safeEval(parts[1]!.trim()));
+        if (!startD || !endD) return "null";
+        return String(countNetworkDays(startD, endD));
+      },
+    };
 
-      result = result.replace(
-        /\bEDATE\(([^()]*)\)/gi,
-        (_m: string, args: string) => {
-          const parts = splitArgs(args);
-          if (parts.length < 2) return "null";
-          const d = parseDateValue(safeEval(parts[0]!.trim()));
-          if (!d) return "null";
-          const months = Number(safeEval(parts[1]!.trim()));
-          if (isNaN(months)) return "null";
-          const nd = new Date(d);
-          nd.setMonth(nd.getMonth() + months);
-          return JSON.stringify(nd.toISOString().split("T")[0]);
-        },
-      );
+    let result = expr;
+    let maxIterations = Math.max(100, result.length * 2);
 
-      result = result.replace(
-        /\bEOMONTH\(([^()]*)\)/gi,
-        (_m: string, args: string) => {
-          const parts = splitArgs(args);
-          if (parts.length < 2) return "null";
-          const d = parseDateValue(safeEval(parts[0]!.trim()));
-          if (!d) return "null";
-          const months = Number(safeEval(parts[1]!.trim()));
-          if (isNaN(months)) return "null";
-          const eom = new Date(
-            d.getFullYear(),
-            d.getMonth() + months + 1,
-            0,
-          );
-          return JSON.stringify(
-            eom.toISOString().split("T")[0],
-          );
-        },
-      );
-
-      result = result.replace(
-        /\bNETWORKDAYS\(([^()]*)\)/gi,
-        (_m: string, args: string) => {
-          const parts = splitArgs(args);
-          if (parts.length < 2) return "null";
-          const startD = parseDateValue(
-            safeEval(parts[0]!.trim()),
-          );
-          const endD = parseDateValue(
-            safeEval(parts[1]!.trim()),
-          );
-          if (!startD || !endD) return "null";
-          return String(countNetworkDays(startD, endD));
-        },
-      );
-
-      if (result === previous) break;
+    while (maxIterations-- > 0) {
+      const call = findInnermostFunctionCall(result, functionHandlers);
+      if (!call) break;
+      const replacement = functionHandlers[call.name]!(call.args);
+      result =
+        result.slice(0, call.start) +
+        replacement +
+        result.slice(call.end);
     }
+
     return result;
+  }
+
+  function serializeFormulaValue(val: any): string {
+    if (val === null || val === undefined) return "null";
+    if (typeof val === "string") return JSON.stringify(val);
+    return String(val);
+  }
+
+  interface ParsedFunctionCall {
+    name: string;
+    args: string;
+    start: number;
+    end: number;
+  }
+
+  function findInnermostFunctionCall(
+    expression: string,
+    handlers: Record<string, (args: string) => string>,
+  ): ParsedFunctionCall | null {
+    const stack: Array<{
+      name: string | null;
+      start: number;
+      argsStart: number;
+    }> = [];
+    let inString = false;
+    let stringChar = "";
+    let escaped = false;
+
+    for (let i = 0; i < expression.length; i++) {
+      const char = expression[i]!;
+
+      if (inString) {
+        if (char === "\\" && !escaped) {
+          escaped = true;
+          continue;
+        }
+        if (char === stringChar && !escaped) {
+          inString = false;
+        }
+        escaped = false;
+        continue;
+      }
+
+      if (char === '"' || char === "'") {
+        inString = true;
+        stringChar = char;
+        escaped = false;
+        continue;
+      }
+
+      if (char === "(") {
+        const matched = getFunctionAtParen(expression, i, handlers);
+        stack.push(
+          matched
+            ? { name: matched.name, start: matched.start, argsStart: i + 1 }
+            : { name: null, start: i, argsStart: i + 1 },
+        );
+        continue;
+      }
+
+      if (char === ")" && stack.length > 0) {
+        const open = stack.pop()!;
+        if (!open.name) continue;
+        return {
+          name: open.name,
+          args: expression.slice(open.argsStart, i),
+          start: open.start,
+          end: i + 1,
+        };
+      }
+    }
+
+    return null;
+  }
+
+  function getFunctionAtParen(
+    expression: string,
+    parenIndex: number,
+    handlers: Record<string, (args: string) => string>,
+  ): { name: string; start: number } | null {
+    let end = parenIndex - 1;
+    while (end >= 0 && /\s/.test(expression[end]!)) end--;
+
+    let start = end;
+    while (start >= 0 && /[A-Za-z0-9_]/.test(expression[start]!)) start--;
+    start++;
+
+    if (start > end) return null;
+
+    const name = expression.slice(start, end + 1).toUpperCase();
+    if (!(name in handlers)) return null;
+
+    const before = start > 0 ? expression[start - 1]! : "";
+    if (before && /[A-Za-z0-9_]/.test(before)) return null;
+
+    return { name, start };
   }
 
   function splitArgs(argsStr: string): string[] {
@@ -524,18 +468,88 @@ export default (router: any, context: EndpointExtensionContext) => {
     )
       return trimmed.slice(1, -1);
     if (/^-?\d+(\.\d+)?$/.test(trimmed)) return Number(trimmed);
-    if (/^[\d\s+\-*/().%<>=!&|?:]+$/.test(trimmed)) {
-      return Function(`"use strict"; return (${trimmed})`)();
+    const normalized = normalizeExpressionOperators(trimmed);
+    const safeCheck = normalized.replace(/\b(null|true|false)\b/g, "0");
+    if (/^[\d\s+\-*/().%<>=!&|?:"]+$/.test(safeCheck)) {
+      return Function(`"use strict"; return (${normalized})`)();
     }
     return trimmed;
+  }
+
+  function normalizeExpressionOperators(expression: string): string {
+    let normalized = "";
+    let inString = false;
+    let stringChar = "";
+    let escaped = false;
+
+    for (let i = 0; i < expression.length; i++) {
+      const char = expression[i]!;
+
+      if (inString) {
+        normalized += char;
+        if (char === "\\" && !escaped) {
+          escaped = true;
+          continue;
+        }
+        if (char === stringChar && !escaped) {
+          inString = false;
+        }
+        escaped = false;
+        continue;
+      }
+
+      if (char === '"' || char === "'") {
+        inString = true;
+        stringChar = char;
+        escaped = false;
+        normalized += char;
+        continue;
+      }
+
+      const prev = i > 0 ? expression[i - 1]! : "";
+      const next = i + 1 < expression.length ? expression[i + 1]! : "";
+
+      if (char === "<" && next === ">") {
+        normalized += "!=";
+        i++;
+        continue;
+      }
+
+      if (
+        char === "=" &&
+        prev !== "!" &&
+        prev !== "<" &&
+        prev !== ">" &&
+        prev !== "=" &&
+        next !== "="
+      ) {
+        normalized += "==";
+        continue;
+      }
+
+      normalized += char;
+    }
+
+    return normalized;
   }
 
   // ─── Date helpers (used by date functions) ──────────────
 
   function parseDateValue(val: any): Date | null {
     if (val === null || val === undefined || val === "null") return null;
-    const s = typeof val === "string" ? val : String(val);
+    if (val instanceof Date) {
+      return isNaN(val.getTime()) ? null : val;
+    }
+    if (typeof val === "number") {
+      const d = new Date(val);
+      return isNaN(d.getTime()) ? null : d;
+    }
+    const s = typeof val === "string" ? val.trim() : String(val);
     if (!s || s === "null") return null;
+    if (/^-?\d{11,13}$/.test(s)) {
+      const d = new Date(Number(s));
+      return isNaN(d.getTime()) ? null : d;
+    }
     const d = new Date(s);
     return isNaN(d.getTime()) ? null : d;
   }

@@ -95,10 +95,13 @@ IF({{price}} > 100, {{price}} * 0.9, {{price}})
 IF({{type}} == "premium", {{price}} * 1.5, {{price}})
 ```
 
-Nested IFs:
+Nested IFs (inner IF evaluates first, its result is correctly passed to the outer IF):
 
 ```text
 IF({{score}} >= 90, "A", IF({{score}} >= 80, "B", IF({{score}} >= 70, "C", "F")))
+
+IF({{age}} > 100, "Not a kid", IF({{age}} > 10, "Youth", "Child"))
+→ With age=40: "Youth"
 ```
 
 ### COALESCE(a, b, ...)

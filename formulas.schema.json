@@ -1,0 +1,1081 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/directus-extension-queryable-formula/formulas.schema.json",
+  "title": "Directus Queryable Formula Language",
+  "description": "Schema describing all available formula functions, field references, operators, and expression syntax for the Directus Queryable Formula extension. Formulas are evaluated iteratively (innermost calls first, up to 50 passes) and support nesting. Field values are referenced using {{fieldName}} syntax. Results are stored in the database, making them queryable, sortable, and filterable.",
+  "type": "object",
+  "properties": {
+    "fieldReferences": {
+      "type": "object",
+      "description": "How to reference field values inside formulas.",
+      "properties": {
+        "simple": {
+          "type": "object",
+          "description": "Direct field reference from the current record.",
+          "properties": {
+            "syntax": { "const": "{{fieldName}}" },
+            "examples": {
+              "type": "array",
+              "items": { "type": "string" },
+              "default": ["{{name}}", "{{price}}", "{{date_of_birth}}"]
+            },
+            "notes": {
+              "const": "Replaced with the field's value before formula evaluation. Date values are converted to ISO 8601 strings."
+            }
+          }
+        },
+        "relational": {
+          "type": "object",
+          "description": "Many-to-One (M2O) relational field lookup.",
+          "properties": {
+            "syntax": { "const": "{{foreignKeyField.relatedFieldName}}" },
+            "examples": {
+              "type": "array",
+              "items": { "type": "string" },
+              "default": [
+                "{{category.name}}",
+                "{{author.email}}",
+                "{{department.code}}"
+              ]
+            },
+            "notes": {
+              "const": "Resolves the foreign key, then fetches the specified field from the related record. Returns null if the FK is null or the relation is not found. Batch-resolved to avoid N+1 queries."
+            }
+          }
+        }
+      }
+    },
+    "expressionSyntax": {
+      "type": "object",
+      "description": "Supported operators and literals in formula expressions (evaluated by safeEval).",
+      "properties": {
+        "literals": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": { "type": "string" },
+              "examples": {
+                "type": "array",
+                "items": { "type": "string" }
+              }
+            }
+          },
+          "default": [
+            { "type": "null", "examples": ["null"] },
+            { "type": "boolean", "examples": ["true", "false"] },
+            { "type": "string", "examples": ["\"hello\"", "'world'"] },
+            { "type": "number", "examples": ["42", "3.14", "-7"] }
+          ]
+        },
+        "operators": {
+          "type": "object",
+          "properties": {
+            "arithmetic": {
+              "type": "array",
+              "items": { "type": "string" },
+              "default": ["+", "-", "*", "/", "%", "()"]
+            },
+            "comparison": {
+              "type": "array",
+              "items": { "type": "string" },
+              "default": ["<", ">", "=", "!=", "<=", ">="]
+            },
+            "logical": {
+              "type": "array",
+              "items": { "type": "string" },
+              "default": ["& (AND)", "| (OR)", "?: (ternary)"]
+            }
+          }
+        }
+      }
+    },
+    "functions": {
+      "type": "object",
+      "description": "All available formula functions grouped by category.",
+      "properties": {
+        "string": {
+          "type": "array",
+          "description": "Functions for string manipulation.",
+          "items": { "$ref": "#/$defs/formulaFunction" },
+          "default": [
+            {
+              "name": "CONCAT",
+              "syntax": "CONCAT(value1, value2, ...)",
+              "description": "Concatenates all arguments into a single string.",
+              "parameters": [
+                {
+                  "name": "values",
+                  "type": "any",
+                  "required": true,
+                  "variadic": true,
+                  "description": "One or more values to concatenate. Mixed types are coerced to strings."
+                }
+              ],
+              "returns": {
+                "type": "string",
+                "description": "All arguments joined together as one string."
+              },
+              "examples": [
+                {
+                  "formula": "CONCAT({{first_name}}, \" \", {{last_name}})",
+                  "result": "John Doe"
+                },
+                { "formula": "CONCAT(\"ID-\", {{id}})", "result": "ID-42" },
+                {
+                  "formula": "CONCAT({{city}}, \", \", {{country}})",
+                  "result": "Male, Maldives"
+                }
+              ]
+            },
+            {
+              "name": "UPPER",
+              "syntax": "UPPER(text)",
+              "description": "Converts a string to uppercase.",
+              "parameters": [
+                {
+                  "name": "text",
+                  "type": "string",
+                  "required": true,
+                  "description": "The text to convert to uppercase."
+                }
+              ],
+              "returns": {
+                "type": "string",
+                "description": "The input text in all uppercase letters."
+              },
+              "examples": [
+                { "formula": "UPPER({{name}})", "result": "JOHN DOE" },
+                { "formula": "UPPER(\"hello\")", "result": "HELLO" }
+              ]
+            },
+            {
+              "name": "LOWER",
+              "syntax": "LOWER(text)",
+              "description": "Converts a string to lowercase.",
+              "parameters": [
+                {
+                  "name": "text",
+                  "type": "string",
+                  "required": true,
+                  "description": "The text to convert to lowercase."
+                }
+              ],
+              "returns": {
+                "type": "string",
+                "description": "The input text in all lowercase letters."
+              },
+              "examples": [
+                { "formula": "LOWER({{name}})", "result": "john doe" },
+                { "formula": "LOWER(\"HELLO\")", "result": "hello" }
+              ]
+            },
+            {
+              "name": "TRIM",
+              "syntax": "TRIM(text)",
+              "description": "Removes leading and trailing whitespace from a string.",
+              "parameters": [
+                {
+                  "name": "text",
+                  "type": "string",
+                  "required": true,
+                  "description": "The text to trim."
+                }
+              ],
+              "returns": {
+                "type": "string",
+                "description": "The input text with leading and trailing whitespace removed."
+              },
+              "examples": [
+                { "formula": "TRIM(\"  hello  \")", "result": "hello" }
+              ]
+            }
+          ]
+        },
+        "math": {
+          "type": "array",
+          "description": "Functions for mathematical operations.",
+          "items": { "$ref": "#/$defs/formulaFunction" },
+          "default": [
+            {
+              "name": "ROUND",
+              "syntax": "ROUND(number, decimals)",
+              "description": "Rounds a number to a specified number of decimal places.",
+              "parameters": [
+                {
+                  "name": "number",
+                  "type": "number",
+                  "required": true,
+                  "description": "The number to round."
+                },
+                {
+                  "name": "decimals",
+                  "type": "number",
+                  "required": false,
+                  "description": "Number of decimal places. Defaults to 0."
+                }
+              ],
+              "returns": {
+                "type": "number",
+                "description": "The rounded number."
+              },
+              "examples": [
+                { "formula": "ROUND(3.14159, 2)", "result": "3.14" },
+                { "formula": "ROUND(3.7)", "result": "4" }
+              ]
+            },
+            {
+              "name": "FLOOR",
+              "syntax": "FLOOR(number)",
+              "description": "Rounds a number down to the nearest integer.",
+              "parameters": [
+                {
+                  "name": "number",
+                  "type": "number",
+                  "required": true,
+                  "description": "The number to round down."
+                }
+              ],
+              "returns": {
+                "type": "number",
+                "description": "The largest integer less than or equal to the input."
+              },
+              "examples": [
+                { "formula": "FLOOR(3.9)", "result": "3" },
+                { "formula": "FLOOR(-2.1)", "result": "-3" }
+              ]
+            },
+            {
+              "name": "CEIL",
+              "syntax": "CEIL(number)",
+              "description": "Rounds a number up to the nearest integer.",
+              "parameters": [
+                {
+                  "name": "number",
+                  "type": "number",
+                  "required": true,
+                  "description": "The number to round up."
+                }
+              ],
+              "returns": {
+                "type": "number",
+                "description": "The smallest integer greater than or equal to the input."
+              },
+              "examples": [
+                { "formula": "CEIL(3.1)", "result": "4" },
+                { "formula": "CEIL(-2.9)", "result": "-2" }
+              ]
+            }
+          ]
+        },
+        "logic": {
+          "type": "array",
+          "description": "Functions for conditional logic and null handling.",
+          "items": { "$ref": "#/$defs/formulaFunction" },
+          "default": [
+            {
+              "name": "IF",
+              "syntax": "IF(condition, value_if_true, value_if_false)",
+              "description": "Returns one value if a condition is true and another if false. Requires exactly 3 arguments. Supports nesting (e.g. IF(..., IF(...))) — inner results are properly quoted so outer conditions evaluate correctly.",
+              "parameters": [
+                {
+                  "name": "condition",
+                  "type": "any",
+                  "required": true,
+                  "description": "An expression that evaluates to truthy or falsy. Supports comparison operators (>, <, =, !=, >=, <=) and logical operators (& for AND, | for OR)."
+                },
+                {
+                  "name": "value_if_true",
+                  "type": "any",
+                  "required": true,
+                  "description": "The value returned when the condition is truthy."
+                },
+                {
+                  "name": "value_if_false",
+                  "type": "any",
+                  "required": true,
+                  "description": "The value returned when the condition is falsy."
+                }
+              ],
+              "returns": {
+                "type": "any",
+                "description": "value_if_true when condition is truthy, value_if_false otherwise. Returns \"null\" if not exactly 3 arguments."
+              },
+              "examples": [
+                {
+                  "formula": "IF({{age}} >= 18, \"Adult\", \"Minor\")",
+                  "result": "Adult"
+                },
+                {
+                  "formula": "IF({{status}} = \"active\", \"Yes\", \"No\")",
+                  "result": "Yes"
+                },
+                {
+                  "formula": "IF({{score}} > 90, \"A\", IF({{score}} > 80, \"B\", \"C\"))",
+                  "result": "B",
+                  "note": "Nested IF for multiple conditions — inner IF evaluates first, its string result is properly preserved for the outer IF"
+                },
+                {
+                  "formula": "IF({{age}} > 100, \"Not a kid\", IF({{age}} > 10, \"Youth\", \"Child\"))",
+                  "result": "Youth",
+                  "note": "With age=40: outer condition is false, inner IF evaluates and returns the correct branch"
+                }
+              ]
+            },
+            {
+              "name": "COALESCE",
+              "syntax": "COALESCE(value1, value2, ...)",
+              "description": "Returns the first non-null, non-empty value from its arguments.",
+              "parameters": [
+                {
+                  "name": "values",
+                  "type": "any",
+                  "required": true,
+                  "variadic": true,
+                  "description": "Two or more values to check. Returns the first one that is not null, not the string \"null\", and not empty."
+                }
+              ],
+              "returns": {
+                "type": "any",
+                "description": "The first non-null value, or null if all are null/empty."
+              },
+              "examples": [
+                {
+                  "formula": "COALESCE({{nickname}}, {{first_name}}, \"Unknown\")",
+                  "result": "John"
+                },
+                {
+                  "formula": "COALESCE({{phone}}, {{email}}, \"No contact\")",
+                  "result": "john@example.com"
+                }
+              ]
+            }
+          ]
+        },
+        "dateCreation": {
+          "type": "array",
+          "description": "Functions for creating date and time values.",
+          "items": { "$ref": "#/$defs/formulaFunction" },
+          "default": [
+            {
+              "name": "NOW",
+              "syntax": "NOW()",
+              "description": "Returns the current date and time as an ISO 8601 string.",
+              "parameters": [],
+              "returns": {
+                "type": "string",
+                "format": "date-time",
+                "description": "Current UTC datetime in ISO 8601 format."
+              },
+              "examples": [
+                { "formula": "NOW()", "result": "2026-04-01T12:34:56.789Z" }
+              ]
+            },
+            {
+              "name": "TODAY",
+              "syntax": "TODAY()",
+              "description": "Returns the current date (without time) as a YYYY-MM-DD string.",
+              "parameters": [],
+              "returns": {
+                "type": "string",
+                "format": "date",
+                "description": "Current date in YYYY-MM-DD format."
+              },
+              "examples": [{ "formula": "TODAY()", "result": "2026-04-01" }]
+            },
+            {
+              "name": "DATE",
+              "syntax": "DATE(year, month, day)",
+              "description": "Creates a date from individual year, month, and day components.",
+              "parameters": [
+                {
+                  "name": "year",
+                  "type": "number",
+                  "required": true,
+                  "description": "The 4-digit year."
+                },
+                {
+                  "name": "month",
+                  "type": "number",
+                  "required": true,
+                  "description": "The month (1-12). Note: 1-indexed, not 0-indexed."
+                },
+                {
+                  "name": "day",
+                  "type": "number",
+                  "required": true,
+                  "description": "The day of the month (1-31)."
+                }
+              ],
+              "returns": {
+                "type": "string",
+                "format": "date",
+                "description": "Date in YYYY-MM-DD format."
+              },
+              "examples": [
+                { "formula": "DATE(2026, 4, 1)", "result": "2026-04-01" },
+                {
+                  "formula": "DATE(YEAR(NOW()), 1, 1)",
+                  "result": "2026-01-01",
+                  "note": "First day of current year"
+                }
+              ]
+            },
+            {
+              "name": "DATEVALUE",
+              "syntax": "DATEVALUE(date_string)",
+              "description": "Parses a date string or value and returns it in YYYY-MM-DD format.",
+              "parameters": [
+                {
+                  "name": "date_string",
+                  "type": "string",
+                  "required": true,
+                  "description": "A date string in any parseable format."
+                }
+              ],
+              "returns": {
+                "type": "string",
+                "format": "date",
+                "description": "Date in YYYY-MM-DD format. Returns \"null\" if the input cannot be parsed as a valid date."
+              },
+              "examples": [
+                {
+                  "formula": "DATEVALUE({{created_at}})",
+                  "result": "2026-04-01"
+                },
+                {
+                  "formula": "DATEVALUE(\"April 1, 2026\")",
+                  "result": "2026-04-01"
+                }
+              ]
+            },
+            {
+              "name": "TIME",
+              "syntax": "TIME(hours, minutes, seconds)",
+              "description": "Creates a time string from individual components.",
+              "parameters": [
+                {
+                  "name": "hours",
+                  "type": "number",
+                  "required": true,
+                  "description": "Hours (0-23)."
+                },
+                {
+                  "name": "minutes",
+                  "type": "number",
+                  "required": true,
+                  "description": "Minutes (0-59)."
+                },
+                {
+                  "name": "seconds",
+                  "type": "number",
+                  "required": true,
+                  "description": "Seconds (0-59)."
+                }
+              ],
+              "returns": {
+                "type": "string",
+                "format": "time",
+                "description": "Time in HH:MM:SS format (zero-padded)."
+              },
+              "examples": [
+                { "formula": "TIME(14, 30, 0)", "result": "14:30:00" },
+                { "formula": "TIME(9, 5, 30)", "result": "09:05:30" }
+              ]
+            },
+            {
+              "name": "TIMEVALUE",
+              "syntax": "TIMEVALUE(datetime)",
+              "description": "Extracts the time portion from a datetime value.",
+              "parameters": [
+                {
+                  "name": "datetime",
+                  "type": "string",
+                  "required": true,
+                  "description": "A datetime string to extract the time from."
+                }
+              ],
+              "returns": {
+                "type": "string",
+                "format": "time",
+                "description": "Time in HH:MM:SS format (no milliseconds)."
+              },
+              "examples": [
+                {
+                  "formula": "TIMEVALUE({{created_at}})",
+                  "result": "14:30:45"
+                },
+                { "formula": "TIMEVALUE(NOW())", "result": "12:34:56" }
+              ]
+            }
+          ]
+        },
+        "dateExtraction": {
+          "type": "array",
+          "description": "Functions for extracting components from date/time values.",
+          "items": { "$ref": "#/$defs/formulaFunction" },
+          "default": [
+            {
+              "name": "YEAR",
+              "syntax": "YEAR(date)",
+              "description": "Extracts the year from a date.",
+              "parameters": [
+                {
+                  "name": "date",
+                  "type": "string",
+                  "required": true,
+                  "description": "A date or datetime string."
+                }
+              ],
+              "returns": {
+                "type": "number",
+                "description": "The 4-digit year."
+              },
+              "examples": [
+                { "formula": "YEAR({{dob}})", "result": "1990" },
+                { "formula": "YEAR(NOW())", "result": "2026" }
+              ]
+            },
+            {
+              "name": "MONTH",
+              "syntax": "MONTH(date)",
+              "description": "Extracts the month from a date (1-indexed).",
+              "parameters": [
+                {
+                  "name": "date",
+                  "type": "string",
+                  "required": true,
+                  "description": "A date or datetime string."
+                }
+              ],
+              "returns": {
+                "type": "number",
+                "description": "Month number (1 = January, 12 = December)."
+              },
+              "examples": [
+                { "formula": "MONTH({{dob}})", "result": "4" },
+                { "formula": "MONTH(NOW())", "result": "4" }
+              ]
+            },
+            {
+              "name": "DAY",
+              "syntax": "DAY(date)",
+              "description": "Extracts the day of the month from a date.",
+              "parameters": [
+                {
+                  "name": "date",
+                  "type": "string",
+                  "required": true,
+                  "description": "A date or datetime string."
+                }
+              ],
+              "returns": {
+                "type": "number",
+                "description": "Day of the month (1-31)."
+              },
+              "examples": [
+                { "formula": "DAY({{dob}})", "result": "15" },
+                { "formula": "DAY(TODAY())", "result": "1" }
+              ]
+            },
+            {
+              "name": "HOUR",
+              "syntax": "HOUR(datetime)",
+              "description": "Extracts the hour from a datetime.",
+              "parameters": [
+                {
+                  "name": "datetime",
+                  "type": "string",
+                  "required": true,
+                  "description": "A datetime string."
+                }
+              ],
+              "returns": { "type": "number", "description": "Hour (0-23)." },
+              "examples": [
+                { "formula": "HOUR({{created_at}})", "result": "14" }
+              ]
+            },
+            {
+              "name": "MINUTE",
+              "syntax": "MINUTE(datetime)",
+              "description": "Extracts the minute from a datetime.",
+              "parameters": [
+                {
+                  "name": "datetime",
+                  "type": "string",
+                  "required": true,
+                  "description": "A datetime string."
+                }
+              ],
+              "returns": { "type": "number", "description": "Minute (0-59)." },
+              "examples": [
+                { "formula": "MINUTE({{created_at}})", "result": "30" }
+              ]
+            },
+            {
+              "name": "SECOND",
+              "syntax": "SECOND(datetime)",
+              "description": "Extracts the second from a datetime.",
+              "parameters": [
+                {
+                  "name": "datetime",
+                  "type": "string",
+                  "required": true,
+                  "description": "A datetime string."
+                }
+              ],
+              "returns": { "type": "number", "description": "Second (0-59)." },
+              "examples": [
+                { "formula": "SECOND({{created_at}})", "result": "45" }
+              ]
+            },
+            {
+              "name": "WEEKDAY",
+              "syntax": "WEEKDAY(date, type)",
+              "description": "Returns the day of the week for a date.",
+              "parameters": [
+                {
+                  "name": "date",
+                  "type": "string",
+                  "required": true,
+                  "description": "A date or datetime string."
+                },
+                {
+                  "name": "type",
+                  "type": "number",
+                  "required": false,
+                  "description": "Return type: 1 = Sunday-Saturday as 1-7 (default), 2 = Monday-Sunday as 1-7, 3 = Monday-Sunday as 0-6."
+                }
+              ],
+              "returns": {
+                "type": "number",
+                "description": "Day of week number based on the selected type."
+              },
+              "examples": [
+                {
+                  "formula": "WEEKDAY({{dob}})",
+                  "result": "4",
+                  "note": "Wednesday with type 1 (Sun=1)"
+                },
+                {
+                  "formula": "WEEKDAY({{dob}}, 2)",
+                  "result": "3",
+                  "note": "Wednesday with type 2 (Mon=1)"
+                }
+              ]
+            },
+            {
+              "name": "ISOWEEKNUM",
+              "syntax": "ISOWEEKNUM(date)",
+              "description": "Returns the ISO 8601 week number. Weeks start on Monday; week 1 contains January 4th.",
+              "parameters": [
+                {
+                  "name": "date",
+                  "type": "string",
+                  "required": true,
+                  "description": "A date or datetime string."
+                }
+              ],
+              "returns": {
+                "type": "number",
+                "description": "ISO week number (1-53)."
+              },
+              "examples": [
+                { "formula": "ISOWEEKNUM(\"2026-01-01\")", "result": "1" }
+              ]
+            },
+            {
+              "name": "WEEKNUM",
+              "syntax": "WEEKNUM(date, type)",
+              "description": "Returns the week number of the year.",
+              "parameters": [
+                {
+                  "name": "date",
+                  "type": "string",
+                  "required": true,
+                  "description": "A date or datetime string."
+                },
+                {
+                  "name": "type",
+                  "type": "number",
+                  "required": false,
+                  "description": "1 = weeks start on Sunday (default), 2 = weeks start on Monday."
+                }
+              ],
+              "returns": {
+                "type": "number",
+                "description": "Week number (1-53)."
+              },
+              "examples": [
+                { "formula": "WEEKNUM(\"2026-04-01\")", "result": "14" },
+                { "formula": "WEEKNUM(\"2026-04-01\", 2)", "result": "14" }
+              ]
+            }
+          ]
+        },
+        "dateArithmetic": {
+          "type": "array",
+          "description": "Functions for date calculations and arithmetic.",
+          "items": { "$ref": "#/$defs/formulaFunction" },
+          "default": [
+            {
+              "name": "DATEDIF",
+              "syntax": "DATEDIF(start_date, end_date, unit)",
+              "description": "Calculates the difference between two dates in the specified unit.",
+              "parameters": [
+                {
+                  "name": "start_date",
+                  "type": "string",
+                  "required": true,
+                  "description": "The start date."
+                },
+                {
+                  "name": "end_date",
+                  "type": "string",
+                  "required": true,
+                  "description": "The end date."
+                },
+                {
+                  "name": "unit",
+                  "type": "string",
+                  "required": true,
+                  "description": "The unit of difference to return.",
+                  "enum": ["D", "M", "Y", "YM", "MD", "YD"],
+                  "enumDescriptions": {
+                    "D": "Total days between dates.",
+                    "M": "Total complete months between dates.",
+                    "Y": "Total complete years between dates.",
+                    "YM": "Months remaining after subtracting complete years (0-11).",
+                    "MD": "Days remaining after subtracting complete months (0-30).",
+                    "YD": "Days remaining after subtracting complete years (0-365)."
+                  }
+                }
+              ],
+              "returns": {
+                "type": "number",
+                "description": "The difference between the two dates in the specified unit."
+              },
+              "examples": [
+                {
+                  "formula": "DATEDIF({{dob}}, NOW(), \"Y\")",
+                  "result": "35",
+                  "note": "Age in years"
+                },
+                {
+                  "formula": "DATEDIF({{dob}}, NOW(), \"M\")",
+                  "result": "420",
+                  "note": "Age in total months"
+                },
+                {
+                  "formula": "DATEDIF({{start_date}}, {{end_date}}, \"D\")",
+                  "result": "90",
+                  "note": "Duration in days"
+                },
+                {
+                  "formula": "CONCAT(DATEDIF({{dob}}, NOW(), \"Y\"), \" years, \", DATEDIF({{dob}}, NOW(), \"YM\"), \" months\")",
+                  "result": "35 years, 3 months",
+                  "note": "Compound age display"
+                }
+              ]
+            },
+            {
+              "name": "DAYS",
+              "syntax": "DAYS(end_date, start_date)",
+              "description": "Returns the number of days between two dates. NOTE: end_date comes FIRST (opposite of DATEDIF).",
+              "parameters": [
+                {
+                  "name": "end_date",
+                  "type": "string",
+                  "required": true,
+                  "description": "The end date (first argument)."
+                },
+                {
+                  "name": "start_date",
+                  "type": "string",
+                  "required": true,
+                  "description": "The start date (second argument)."
+                }
+              ],
+              "returns": {
+                "type": "number",
+                "description": "Number of days between the two dates (end - start)."
+              },
+              "examples": [
+                {
+                  "formula": "DAYS(\"2026-04-30\", \"2026-04-01\")",
+                  "result": "29"
+                },
+                {
+                  "formula": "DAYS(TODAY(), {{start_date}})",
+                  "result": "45",
+                  "note": "Days elapsed since start"
+                }
+              ]
+            },
+            {
+              "name": "EDATE",
+              "syntax": "EDATE(date, months)",
+              "description": "Returns a date that is the specified number of months before or after a given date.",
+              "parameters": [
+                {
+                  "name": "date",
+                  "type": "string",
+                  "required": true,
+                  "description": "The starting date."
+                },
+                {
+                  "name": "months",
+                  "type": "number",
+                  "required": true,
+                  "description": "Number of months to add (positive) or subtract (negative)."
+                }
+              ],
+              "returns": {
+                "type": "string",
+                "format": "date",
+                "description": "Date in YYYY-MM-DD format."
+              },
+              "examples": [
+                {
+                  "formula": "EDATE(\"2026-04-01\", 3)",
+                  "result": "2026-07-01"
+                },
+                {
+                  "formula": "EDATE(TODAY(), -6)",
+                  "result": "2025-10-01",
+                  "note": "6 months ago"
+                },
+                {
+                  "formula": "EDATE({{contract_start}}, 12)",
+                  "result": "2027-04-01",
+                  "note": "Contract expiry (1 year later)"
+                }
+              ]
+            },
+            {
+              "name": "EOMONTH",
+              "syntax": "EOMONTH(date, months)",
+              "description": "Returns the last day of the month that is the specified number of months before or after a given date.",
+              "parameters": [
+                {
+                  "name": "date",
+                  "type": "string",
+                  "required": true,
+                  "description": "The starting date."
+                },
+                {
+                  "name": "months",
+                  "type": "number",
+                  "required": true,
+                  "description": "Number of months to offset. Use 0 for the end of the same month as the input date."
+                }
+              ],
+              "returns": {
+                "type": "string",
+                "format": "date",
+                "description": "Last day of the target month in YYYY-MM-DD format."
+              },
+              "examples": [
+                {
+                  "formula": "EOMONTH(\"2026-04-15\", 0)",
+                  "result": "2026-04-30",
+                  "note": "End of current month"
+                },
+                {
+                  "formula": "EOMONTH(\"2026-02-10\", 0)",
+                  "result": "2026-02-28",
+                  "note": "End of Feb (non-leap year)"
+                },
+                {
+                  "formula": "EOMONTH(TODAY(), 1)",
+                  "result": "2026-05-31",
+                  "note": "End of next month"
+                }
+              ]
+            },
+            {
+              "name": "NETWORKDAYS",
+              "syntax": "NETWORKDAYS(start_date, end_date)",
+              "description": "Returns the number of working days (Monday-Friday) between two dates, inclusive of both endpoints.",
+              "parameters": [
+                {
+                  "name": "start_date",
+                  "type": "string",
+                  "required": true,
+                  "description": "The start date."
+                },
+                {
+                  "name": "end_date",
+                  "type": "string",
+                  "required": true,
+                  "description": "The end date."
+                }
+              ],
+              "returns": {
+                "type": "number",
+                "description": "Number of weekdays (Mon-Fri) between the two dates, inclusive."
+              },
+              "examples": [
+                {
+                  "formula": "NETWORKDAYS(\"2026-04-01\", \"2026-04-30\")",
+                  "result": "22"
+                },
+                {
+                  "formula": "NETWORKDAYS({{project_start}}, {{project_end}})",
+                  "result": "65",
+                  "note": "Working days in project"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "formulaExamples": {
+      "type": "array",
+      "description": "Complete real-world formula examples combining multiple functions.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "formula": { "type": "string" },
+          "description": { "type": "string" }
+        }
+      },
+      "default": [
+        {
+          "name": "Full Name",
+          "formula": "CONCAT({{first_name}}, \" \", {{last_name}})",
+          "description": "Combines first and last name with a space."
+        },
+        {
+          "name": "Age in Years",
+          "formula": "DATEDIF({{dob}}, NOW(), \"Y\")",
+          "description": "Calculates age from date of birth."
+        },
+        {
+          "name": "Age Display",
+          "formula": "CONCAT(DATEDIF({{dob}}, NOW(), \"Y\"), \" years, \", DATEDIF({{dob}}, NOW(), \"YM\"), \" months, \", DATEDIF({{dob}}, NOW(), \"MD\"), \" days\")",
+          "description": "Shows detailed age breakdown."
+        },
+        {
+          "name": "Status Label",
+          "formula": "IF({{is_active}} = true, \"Active\", \"Inactive\")",
+          "description": "Converts boolean to human-readable status."
+        },
+        {
+          "name": "Price with Tax",
+          "formula": "ROUND({{price}} * 1.15, 2)",
+          "description": "Adds 15% tax and rounds to 2 decimal places."
+        },
+        {
+          "name": "Greeting",
+          "formula": "CONCAT(\"Hello, \", UPPER({{name}}), \"!\")",
+          "description": "Nested function: uppercases name inside a greeting."
+        },
+        {
+          "name": "Days Until Expiry",
+          "formula": "DAYS({{expiry_date}}, TODAY())",
+          "description": "Days remaining until expiry."
+        },
+        {
+          "name": "Expiry Warning",
+          "formula": "IF(DAYS({{expiry_date}}, TODAY()) < 30, \"Expiring Soon\", \"OK\")",
+          "description": "Warns if item expires within 30 days."
+        },
+        {
+          "name": "Quarter",
+          "formula": "CONCAT(\"Q\", CEIL(MONTH({{date}}) / 3))",
+          "description": "Returns the fiscal quarter (Q1-Q4) for a date."
+        },
+        {
+          "name": "Display Name with Fallback",
+          "formula": "COALESCE({{display_name}}, CONCAT({{first_name}}, \" \", {{last_name}}), \"Anonymous\")",
+          "description": "Falls back through display name, full name, then 'Anonymous'."
+        },
+        {
+          "name": "Relational Lookup",
+          "formula": "CONCAT({{name}}, \" - \", {{department.name}})",
+          "description": "Combines local field with related record's field via M2O relation."
+        },
+        {
+          "name": "Contract End Date",
+          "formula": "EDATE({{start_date}}, {{duration_months}})",
+          "description": "Calculates contract end date by adding months to start date."
+        },
+        {
+          "name": "ISO Week Label",
+          "formula": "CONCAT(\"W\", ISOWEEKNUM(TODAY()), \"-\", YEAR(TODAY()))",
+          "description": "Creates an ISO week label like 'W14-2026'."
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "formulaFunction": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The function name (case-insensitive in use)."
+        },
+        "syntax": {
+          "type": "string",
+          "description": "How to call the function."
+        },
+        "description": {
+          "type": "string",
+          "description": "What the function does."
+        },
+        "parameters": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "type": { "type": "string", "enum": ["string", "number", "any"] },
+              "required": { "type": "boolean" },
+              "variadic": {
+                "type": "boolean",
+                "description": "If true, accepts multiple arguments."
+              },
+              "description": { "type": "string" },
+              "enum": { "type": "array", "items": { "type": "string" } },
+              "enumDescriptions": { "type": "object" }
+            },
+            "required": ["name", "type", "required", "description"]
+          }
+        },
+        "returns": {
+          "type": "object",
+          "properties": {
+            "type": { "type": "string" },
+            "format": { "type": "string" },
+            "description": { "type": "string" }
+          },
+          "required": ["type", "description"]
+        },
+        "examples": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "formula": { "type": "string" },
+              "result": { "type": "string" },
+              "note": { "type": "string" }
+            },
+            "required": ["formula", "result"]
+          }
+        }
+      },
+      "required": [
+        "name",
+        "syntax",
+        "description",
+        "parameters",
+        "returns",
+        "examples"
+      ]
+    }
+  }
+}
