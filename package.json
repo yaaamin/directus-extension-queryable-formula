@@ -1,6 +1,6 @@
 {
   "name": "directus-extension-queryable-formula",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "description": "Formula field that stores computed values in DB for querying",
   "icon": "extension",
   "license": "MIT",
@@ -47,7 +47,16 @@
     "dev": "directus-extension build -w --no-minify",
     "link": "directus-extension link",
     "validate": "directus-extension validate",
-    "add": "directus-extension add"
+    "add": "directus-extension add",
+    "test": "sh ./test-env/start.sh",
+    "test:setup": "sh ./test-env/setup.sh",
+    "test:seed": "bun test-env/seed-de-weighted-assessments.ts",
+    "test:schema:de-weighted": "bun test-env/schema/generate-de-weighted-fields.ts",
+    "test:pg:setup": "sh ./test-env-postgres/setup.sh",
+    "test:pg:start": "sh ./test-env-postgres/start.sh",
+    "test:pg:reset": "sh ./test-env-postgres/reset.sh",
+    "test:pg:seed": "bun test-env-postgres/seed-de-weighted-assessments.ts",
+    "test:pg:schema:de-weighted": "bun test-env-postgres/schema/generate-de-weighted-fields.ts"
   },
   "devDependencies": {
     "@directus/extensions-sdk": "17.0.10",

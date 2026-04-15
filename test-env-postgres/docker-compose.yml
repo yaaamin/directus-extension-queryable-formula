@@ -1,0 +1,25 @@
+# PostgreSQL for test-env-postgres (default). Host port 54322 avoids clashing with local 5432.
+# Set USE_EXTERNAL_POSTGRES=1 in .env.pg to use your own Postgres instead (no Compose).
+
+name: queryable-formula-test-pg
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: directus
+      POSTGRES_PASSWORD: directus
+      POSTGRES_DB: directus
+    ports:
+      - "127.0.0.1:54322:5432"
+    volumes:
+      - queryable_formula_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U directus -d directus"]
+      interval: 3s
+      timeout: 5s
+      retries: 15
+      start_period: 5s
+
+volumes:
+  queryable_formula_pg_data:

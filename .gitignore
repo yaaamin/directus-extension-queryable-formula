@@ -4,3 +4,5 @@ dist
 
 # Local Directus test instance
 test-env/instance/
+test-env-postgres/instance/
+test-env-postgres/.env.pg

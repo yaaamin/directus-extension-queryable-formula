@@ -36,6 +36,36 @@ export default (
     return [...new Set(matches.map((m) => m.replace(/\{\{|\}\}/g, "")))];
   }
 
+  /**
+   * Directus may include keys in `items.update` payloads with value `undefined`
+   * (meaning "omit from patch"). Spreading such a payload onto the existing row
+   * clobbers DB values with undefined and makes formulas evaluate as empty → 0.
+   * This shows up more often on PostgreSQL / production than in local SQLite dev.
+   */
+  function payloadUpdatesField(
+    payload: Record<string, any>,
+    field: string,
+  ): boolean {
+    return (
+      Object.prototype.hasOwnProperty.call(payload, field) &&
+      payload[field] !== undefined
+    );
+  }
+
+  function mergeRecordWithPayload(
+    existing: Record<string, any>,
+    payload: Record<string, any>,
+  ): Record<string, any> {
+    const merged = { ...existing };
+    for (const key of Object.keys(payload)) {
+      const v = payload[key];
+      if (v !== undefined) {
+        merged[key] = v;
+      }
+    }
+    return merged;
+  }
+
   function evaluateFormula(
     formula: string,
     record: Record<string, any>,
@@ -1502,9 +1532,21 @@ export default (
         );
       }
 
+      // Strip formula field values from the incoming payload so the hook
+      // is the sole authority for computed values.  Without this, an
+      // external source (Directus client, flow, or internal post-create
+      // update) can send stale/default formula values (e.g. 0) that
+      // bypass recomputation and overwrite the correct DB values.
+      const formulaFieldNames = new Set(sortedFormulas.map((f) => f.field));
+      for (const ffName of formulaFieldNames) {
+        if (Object.prototype.hasOwnProperty.call(payload, ffName)) {
+          delete payload[ffName];
+        }
+      }
+
       // Check if any formula is directly triggered by the payload
       const hasDirectlyAffected = sortedFormulas.some(({ watchFields }) =>
-        watchFields.some((wf) => wf in payload),
+        watchFields.some((wf) => payloadUpdatesField(payload, wf)),
       );
       if (!hasDirectlyAffected) return payload;
 
@@ -1520,7 +1562,7 @@ export default (
 
           if (!existing) continue;
 
-          const merged = { ...existing, ...payload };
+          const merged = mergeRecordWithPayload(existing, payload);
 
           // Resolve relational data for all formulas (cascading may need any of them)
           const allRelRefs = sortedFormulas.flatMap(
@@ -1536,7 +1578,8 @@ export default (
           const recalculated = new Set<string>();
           for (const { field, formula, watchFields } of sortedFormulas) {
             const shouldRecalc = watchFields.some(
-              (wf) => wf in payload || recalculated.has(wf),
+              (wf) =>
+                payloadUpdatesField(payload, wf) || recalculated.has(wf),
             );
             if (!shouldRecalc) continue;
 
