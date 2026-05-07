@@ -26,7 +26,7 @@
         <span>{{ recalcStatus }}</span>
       </button>
     </div>
-    <div v-if="debugMode" class="formula-debug">
+    <div v-if="collectionDebugMode" class="formula-debug">
       <button
         class="debug-btn"
         :class="{ 'debug-btn--loading': debugging }"
@@ -112,7 +112,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, inject, ref } from "vue";
+import { computed, inject, onMounted, ref } from "vue";
 import { useApi } from "@directus/extensions-sdk";
 
 const props = defineProps<{
@@ -137,6 +137,7 @@ const debugging = ref(false);
 const debugOpen = ref(false);
 const debugStatus = ref("Debug Calculation");
 const debugError = ref<string | null>(null);
+const collectionDebugMode = ref(false);
 
 interface DebugRelationStep {
   segment: string;
@@ -169,6 +170,10 @@ interface DebugResponse {
 
 const debugResult = ref<DebugResponse | null>(null);
 
+onMounted(() => {
+  refreshCollectionDebugMode();
+});
+
 async function recalculate() {
   recalculating.value = true;
   recalcStatus.value = "Working…";
@@ -186,6 +191,21 @@ async function recalculate() {
     setTimeout(() => {
       recalcStatus.value = "Recalculate All";
     }, 3000);
+  }
+}
+
+async function refreshCollectionDebugMode() {
+  try {
+    const response = await api.get("/queryable-formula/status");
+    const fields = response.data?.fields;
+    collectionDebugMode.value =
+      Array.isArray(fields) &&
+      fields.some(
+        (field: any) =>
+          field.collection === props.collection && Boolean(field.debugMode),
+      );
+  } catch {
+    collectionDebugMode.value = false;
   }
 }
 

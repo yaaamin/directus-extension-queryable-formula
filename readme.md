@@ -458,9 +458,9 @@ You can also check which formula fields exist:
 
 ## Debug Calculation
 
-Administrators can enable **Debug Mode** in a formula field's configuration. When
-enabled, the item detail page shows a **"Debug Calculation"** button below the
-formula field.
+Administrators can enable **Debug Mode** in any formula field's configuration.
+When enabled on one formula field, the item detail page shows a **"Debug
+Calculation"** button below every queryable formula field in that collection.
 
 Clicking the button runs a record-level debug trace:
 

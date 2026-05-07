@@ -288,9 +288,10 @@
         Debug Mode
       </div>
       <div class="fb-hint">
-        Show a debug button below this formula field for administrators. The
-        button explains relation lookups, formula replacement, and the final
-        calculated value for the current record.
+        Show a debug button below every queryable formula field in this
+        collection for administrators. The button explains relation lookups,
+        formula replacement, and the final calculated value for the current
+        record.
       </div>
       <label class="fb-toggle">
         <input
@@ -303,7 +304,7 @@
             )
           "
         />
-        <span>Show Debug Calculation button</span>
+        <span>Show Debug Calculation buttons for this collection</span>
       </label>
     </div>
   </div>
