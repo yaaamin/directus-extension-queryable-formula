@@ -26,6 +26,88 @@
         <span>{{ recalcStatus }}</span>
       </button>
     </div>
+    <div v-if="debugMode" class="formula-debug">
+      <button
+        class="debug-btn"
+        :class="{ 'debug-btn--loading': debugging }"
+        :disabled="debugging"
+        @click="debugCalculation"
+        title="Show how this formula value was calculated"
+      >
+        <v-icon :name="debugging ? 'hourglass_empty' : 'bug_report'" x-small />
+        <span>{{ debugStatus }}</span>
+      </button>
+
+      <div v-if="debugOpen" class="debug-panel">
+        <div v-if="debugError" class="debug-error">{{ debugError }}</div>
+        <template v-else-if="debugResult">
+          <div class="debug-row">
+            <span>Formula</span>
+            <code>{{ debugResult.formula }}</code>
+          </div>
+          <div class="debug-row">
+            <span>Stored Value</span>
+            <code>{{ formatDebugValue(debugResult.currentStoredValue) }}</code>
+          </div>
+          <div class="debug-row">
+            <span>Calculated Value</span>
+            <code>{{ formatDebugValue(debugResult.formulaTrace.result) }}</code>
+          </div>
+
+          <div class="debug-block">
+            <strong>Expression</strong>
+            <div class="debug-line">
+              <span>After refs</span>
+              <code>{{ debugResult.formulaTrace.afterFieldReplacement }}</code>
+            </div>
+            <div class="debug-line">
+              <span>After functions</span>
+              <code>{{ debugResult.formulaTrace.afterFunctions }}</code>
+            </div>
+            <div v-if="debugResult.formulaTrace.error" class="debug-error">
+              {{ debugResult.formulaTrace.error }}
+            </div>
+          </div>
+
+          <div class="debug-block">
+            <strong>Relationship Resolution</strong>
+            <div
+              v-if="debugResult.relationTrace.refs.length === 0"
+              class="debug-muted"
+            >
+              No dotted relationship references found.
+            </div>
+            <div
+              v-for="refTrace in debugResult.relationTrace.refs"
+              :key="refTrace.ref"
+              class="debug-ref"
+            >
+              <div class="debug-ref-title">
+                <code>{{ refTrace.ref }}</code>
+                <span>→ {{ formatDebugValue(refTrace.resolvedByRow['0']) }}</span>
+              </div>
+              <div
+                v-for="(step, idx) in refTrace.steps"
+                :key="`${refTrace.ref}-${idx}`"
+                class="debug-step"
+              >
+                <span>{{ step.type }}</span>
+                <code>{{ step.fromCollection }}.{{ step.segment }}</code>
+                <span v-if="step.toCollection">→ {{ step.toCollection }}</span>
+                <span>{{ step.fetchedRows }} row(s) fetched</span>
+              </div>
+              <div
+                v-for="warning in refTrace.warnings"
+                :key="warning"
+                class="debug-warning"
+              >
+                {{ warning }}
+              </div>
+            </div>
+          </div>
+        </template>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -42,6 +124,7 @@ const props = defineProps<{
   watchFields?: string[];
   prefix?: string;
   suffix?: string;
+  debugMode?: boolean;
   disabled?: boolean;
 }>();
 
@@ -50,6 +133,41 @@ const values = inject("values", ref<Record<string, any>>({}));
 
 const recalculating = ref(false);
 const recalcStatus = ref("Recalculate All");
+const debugging = ref(false);
+const debugOpen = ref(false);
+const debugStatus = ref("Debug Calculation");
+const debugError = ref<string | null>(null);
+
+interface DebugRelationStep {
+  segment: string;
+  type: string;
+  fromCollection: string;
+  toCollection?: string;
+  fetchedRows: number;
+}
+
+interface DebugRelationRef {
+  ref: string;
+  steps: DebugRelationStep[];
+  resolvedByRow: Record<string, any>;
+  warnings: string[];
+}
+
+interface DebugResponse {
+  formula: string;
+  currentStoredValue: any;
+  formulaTrace: {
+    afterFieldReplacement: string;
+    afterFunctions: string;
+    result: any;
+    error: string | null;
+  };
+  relationTrace: {
+    refs: DebugRelationRef[];
+  };
+}
+
+const debugResult = ref<DebugResponse | null>(null);
 
 async function recalculate() {
   recalculating.value = true;
@@ -68,6 +186,38 @@ async function recalculate() {
     setTimeout(() => {
       recalcStatus.value = "Recalculate All";
     }, 3000);
+  }
+}
+
+async function debugCalculation() {
+  debugging.value = true;
+  debugOpen.value = true;
+  debugStatus.value = "Debugging…";
+  debugError.value = null;
+  try {
+    const response = await api.post("/queryable-formula/debug", {
+      collection: props.collection,
+      field: props.field,
+      primaryKey: props.primaryKey,
+    });
+    debugResult.value = response.data;
+    debugStatus.value = "Refresh Debug";
+  } catch (err: any) {
+    debugError.value =
+      err?.response?.data?.error ?? err?.message ?? "Unable to debug formula";
+    debugStatus.value = "Debug Calculation";
+  } finally {
+    debugging.value = false;
+  }
+}
+
+function formatDebugValue(value: any): string {
+  if (value === null || value === undefined) return "null";
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
   }
 }
 
@@ -695,5 +845,103 @@ function countNetworkDaysClient(startDate: Date, endDate: Date): number {
 .recalc-btn--loading {
   color: var(--theme--foreground-subdued);
   border-color: var(--theme--border-color);
+}
+
+.formula-debug {
+  margin-top: 8px;
+}
+
+.debug-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  font-size: 11px;
+  color: var(--theme--secondary);
+  background: transparent;
+  border: 1px solid var(--theme--secondary);
+  border-radius: var(--theme--border-radius);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.debug-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--theme--secondary) 10%, transparent);
+}
+
+.debug-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.debug-btn--loading {
+  color: var(--theme--foreground-subdued);
+  border-color: var(--theme--border-color);
+}
+
+.debug-panel {
+  margin-top: 8px;
+  padding: 10px;
+  background: var(--theme--background-subdued);
+  border: 1px solid var(--theme--border-color);
+  border-radius: var(--theme--border-radius);
+  font-size: 12px;
+  color: var(--theme--foreground);
+}
+
+.debug-row,
+.debug-line,
+.debug-step,
+.debug-ref-title {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+  margin-top: 4px;
+}
+
+.debug-row > span,
+.debug-line > span:first-child,
+.debug-step > span:first-child {
+  color: var(--theme--foreground-subdued);
+  font-weight: 600;
+}
+
+.debug-panel code {
+  font-family: var(--theme--fonts--monospace--font-family, monospace);
+  font-size: 11px;
+  background: var(--theme--background);
+  padding: 1px 4px;
+  border-radius: 3px;
+  overflow-wrap: anywhere;
+}
+
+.debug-block {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--theme--border-color);
+}
+
+.debug-ref {
+  margin-top: 8px;
+}
+
+.debug-step {
+  padding-left: 8px;
+}
+
+.debug-muted {
+  margin-top: 4px;
+  color: var(--theme--foreground-subdued);
+}
+
+.debug-error,
+.debug-warning {
+  margin-top: 6px;
+  color: var(--theme--danger);
+}
+
+.debug-warning {
+  color: var(--theme--warning);
 }
 </style>

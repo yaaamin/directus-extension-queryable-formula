@@ -280,6 +280,32 @@
         </div>
       </transition>
     </div>
+
+    <!-- ─── Debug Mode ─── -->
+    <div class="fb-section">
+      <div class="fb-label">
+        <v-icon name="bug_report" x-small />
+        Debug Mode
+      </div>
+      <div class="fb-hint">
+        Show a debug button below this formula field for administrators. The
+        button explains relation lookups, formula replacement, and the final
+        calculated value for the current record.
+      </div>
+      <label class="fb-toggle">
+        <input
+          type="checkbox"
+          :checked="Boolean(currentOptions.debugMode)"
+          @change="
+            updateOption(
+              'debugMode',
+              ($event.target as HTMLInputElement).checked || undefined,
+            )
+          "
+        />
+        <span>Show Debug Calculation button</span>
+      </label>
+    </div>
   </div>
 </template>
 
@@ -1925,5 +1951,18 @@ function fieldTypeIcon(type: string): string {
 
 .fb-input:focus {
   border-color: var(--theme--primary);
+}
+
+.fb-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--theme--foreground);
+  cursor: pointer;
+}
+
+.fb-toggle input {
+  accent-color: var(--theme--primary);
 }
 </style>

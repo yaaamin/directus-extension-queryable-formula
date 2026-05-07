@@ -1,6 +1,6 @@
 # Queryable Formula — Directus Extension
 
-A computed field extension for Directus that stores formula results in the database, making them queryable, sortable, and filterable. Includes a visual formula builder, relational field lookups, **cross-formula references with dependency ordering**, scheduled recalculation, and a force-recalculate button.
+A computed field extension for Directus that stores formula results in the database, making them queryable, sortable, and filterable. Includes a visual formula builder, relational field lookups (M2O, O2M, M2M — with nested chain support), **cross-formula references with dependency ordering**, scheduled recalculation, and a force-recalculate button.
 
 ---
 
@@ -268,14 +268,16 @@ If field A references B and B references A (directly or through a chain), the en
 ✔ field_a → field_b → raw_field (no cycle — evaluated in order)
 ```
 
-### Relational Fields (M2O Lookups)
+### Relational Fields
 
-Use `{{relation.field}}` to pull a value from a **related item** via a Many-to-One relationship. The engine automatically resolves the foreign key, finds the related table and primary key via the Directus schema, and fetches the value.
+Use dotted notation to pull values from related items. The engine automatically resolves relations via the Directus schema.
+
+#### M2O (Many-to-One) Lookups
 
 ```text
-{{category.name}}       → string field from the related "categories" table
-{{author.email}}        → string field from the related "users" table
-{{supplier.country}}    → string field from the related "suppliers" table
+{{category.name}}       → field from the related "categories" table
+{{author.email}}        → field from the related "users" table
+{{supplier.country}}    → field from the related "suppliers" table
 ```
 
 How it works:
@@ -283,6 +285,51 @@ How it works:
 1. `category` is the **local FK field** on the current item (stores a foreign key like `3`)
 2. `.name` is the **field on the related table** to read
 3. The engine looks up the relation in the Directus schema, queries the related table for the record matching the FK, and returns the `name` column
+
+#### Nested Relational Lookups
+
+Chain multiple levels of M2O relations using additional dots:
+
+```text
+{{category.parent.name}}          → parent category's name (2 hops)
+{{author.department.manager.name}} → 3 hops deep
+```
+
+Each segment is resolved in order, following the FK chain through each related table.
+Relation IDs are normalized during lookup, so nested chains continue to work when
+Directus provides expanded relation objects or when the database driver returns
+matching IDs as different primitive types (for example `1` vs `"1"`).
+
+#### O2M (One-to-Many) Lookups
+
+Reference fields from the "many" side of a relationship. When multiple related items exist, values are returned **comma-separated**:
+
+```text
+{{reviews.rating}}     → "5, 4, 3" (all ratings for this item)
+{{comments.text}}      → "Great!, Love it, Nice" (all comment texts)
+```
+
+The field name (e.g., `reviews`) must match the **O2M alias field** configured in Directus.
+
+#### M2M (Many-to-Many) Lookups
+
+Works the same way as O2M — reference the M2M alias field, and values from all related items are **comma-separated**:
+
+```text
+{{tags.name}}          → "Tech, Science, AI"
+{{skills.label}}       → "JavaScript, TypeScript, Python"
+```
+
+#### Mixed Chains
+
+You can combine relation types in a single reference:
+
+```text
+{{category.products.name}}   → M2O then O2M: names of all products in the same category
+{{reviews.author.name}}      → O2M then M2O: names of all reviewers
+```
+
+#### Usage Examples
 
 You can use relational refs anywhere you'd use a normal field:
 
@@ -300,7 +347,7 @@ UPPER({{supplier.country}})
 → "GERMANY"
 ```
 
-> **Note:** Only M2O (Many-to-One) relations are supported. You can traverse one level deep — `{{relation.field}}` — but not nested relations like `{{relation.other_relation.field}}`.
+> **Note:** O2M/M2M formulas recalculate on item creation, manual "Recalculate All", and CRON schedules. They do **not** auto-recalculate when related items are created/updated/deleted — use a CRON schedule for those cases.
 
 ---
 
@@ -407,7 +454,24 @@ Each formula field includes a **"Recalculate All"** button on the item detail pa
 You can also check which formula fields exist:
 
 - **Endpoint:** `GET /queryable-formula/status`
-- **Response:** `{ "fields": [{ "collection": "products", "field": "total_price", "formula": "...", "cronSchedule": "*/15 * * * *" }] }`
+- **Response:** `{ "fields": [{ "collection": "products", "field": "total_price", "formula": "...", "cronSchedule": "*/15 * * * *", "debugMode": false }] }`
+
+## Debug Calculation
+
+Administrators can enable **Debug Mode** in a formula field's configuration. When
+enabled, the item detail page shows a **"Debug Calculation"** button below the
+formula field.
+
+Clicking the button runs a record-level debug trace:
+
+- **Endpoint:** `POST /queryable-formula/debug`
+- **Body:** `{ "collection": "products", "field": "total_price", "primaryKey": 1 }`
+- **Auth:** Admin access required
+- **Shows:** original formula, resolved relationship refs, M2O/O2M/M2M hop details, expression after field replacement, expression after function processing, stored value, calculated value, and warnings/errors.
+
+This is especially useful when a nested relationship formula returns `null` even
+though related data exists. The trace identifies which relation segment was used,
+which collection was queried, how many rows were found, and where a chain stopped.
 
 ---
 
@@ -435,8 +499,6 @@ These are **not** currently implemented:
 
 | Feature                                | Notes                                                     |
 | -------------------------------------- | --------------------------------------------------------- |
-| Nested relational lookups              | Can't do `{{category.parent.name}}` — only one level deep |
-| O2M / M2M relational lookups           | Only M2O (Many-to-One) relations are supported            |
 | Aggregations                           | No `SUM()` / `AVG()` across related items                 |
 | `LENGTH()`, `SUBSTRING()`, `REPLACE()` | String manipulation beyond CONCAT/UPPER/LOWER/TRIM        |
 | `MIN()`, `MAX()`, `ABS()`, `POWER()`   | Extended math                                             |

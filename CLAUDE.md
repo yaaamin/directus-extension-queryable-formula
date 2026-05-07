@@ -35,6 +35,11 @@ The `processFunctions` function iteratively applies regex replacements to resolv
 
 ## Relational Fields
 
-- Dotted refs like `{{category.name}}` resolve M2O relations.
-- `resolveRelationalData` and `batchResolveRelationalData` handle single and batch resolution respectively.
-- The schema's `relations` array is used to discover related collections and their primary keys.
+- Dotted refs resolve M2O, O2M, and M2M relations, with support for multi-level nesting.
+- `resolveRelationalData` delegates to `batchResolveRelationalData` for consistency.
+- `batchResolveRelationalData` uses a "cursor walk" approach: for each ref like `{{category.parent.name}}`, it walks the chain segment by segment, maintaining a mapping of source row → current cursor rows at each level.
+- **M2O**: Follows the FK on the current collection to the related collection (single result per row).
+- **O2M**: Found via `schema.relations` where `related_collection === currentCollection && meta.one_field === segment`. Returns multiple results, comma-separated.
+- **M2M**: Detected by `meta.junction_field` on an O2M relation. Traverses the junction table to reach the target collection. Returns multiple results, comma-separated.
+- O2M/M2M alias fields are NOT real DB columns — the backfill/recalculate queries use `select("*")` to avoid column-not-found errors.
+- O2M/M2M formulas do NOT auto-recalculate when related items change; use CRON schedules for that.

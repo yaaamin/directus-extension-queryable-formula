@@ -32,7 +32,7 @@ export default (
    * e.g. "{{category.name}} - {{author.email}}" → ["category.name", "author.email"]
    */
   function extractRelationalRefs(formula: string): string[] {
-    const matches = formula.match(/\{\{([\w]+\.[\w]+)\}\}/g) || [];
+    const matches = formula.match(/\{\{(\w+(?:\.\w+)+)\}\}/g) || [];
     return [...new Set(matches.map((m) => m.replace(/\{\{|\}\}/g, "")))];
   }
 
@@ -66,6 +66,24 @@ export default (
     return merged;
   }
 
+  function extractRelationKey(value: any, preferredKey = "id"): any {
+    if (value === null || value === undefined) return null;
+    if (typeof value === "object" && !(value instanceof Date)) {
+      if (Object.prototype.hasOwnProperty.call(value, preferredKey)) {
+        return value[preferredKey];
+      }
+      if (Object.prototype.hasOwnProperty.call(value, "id")) return value.id;
+      if (Object.prototype.hasOwnProperty.call(value, "value")) return value.value;
+    }
+    return value;
+  }
+
+  function normalizeRelationKey(value: any, preferredKey = "id"): string | null {
+    const key = extractRelationKey(value, preferredKey);
+    if (key === null || key === undefined) return null;
+    return String(key);
+  }
+
   function evaluateFormula(
     formula: string,
     record: Record<string, any>,
@@ -73,9 +91,9 @@ export default (
     try {
       let expression = formula;
 
-      // Replace dotted refs first (e.g. {{category.name}})
+      // Replace dotted refs first (e.g. {{category.name}}, {{category.parent.name}})
       expression = expression.replace(
-        /\{\{([\w]+\.[\w]+)\}\}/g,
+        /\{\{(\w+(?:\.\w+)+)\}\}/g,
         (_match: string, dottedRef: string) => {
           const val = record[dottedRef];
           if (val === null || val === undefined) return "null";
@@ -109,8 +127,7 @@ export default (
 
   /**
    * Resolve relational (dotted) field references for a single record.
-   * Given refs like ["category.name", "author.email"], fetches the related
-   * records and returns a flat map: { "category.name": "Electronics", "author.email": "a@b.com" }
+   * Delegates to the batch version for consistency.
    */
   async function resolveRelationalData(
     collection: string,
@@ -119,85 +136,24 @@ export default (
     db?: any,
   ): Promise<Record<string, any>> {
     if (relationalRefs.length === 0) return {};
-
-    const knex = db || database;
-    const resolved: Record<string, any> = {};
-
-    try {
-      const schema = await getSchema();
-      const collectionRelations = schema.relations || [];
-
-      // Group refs by local field: { category: ["name"], author: ["email", "name"] }
-      const refsByLocal = new Map<string, string[]>();
-      for (const ref of relationalRefs) {
-        const [localField, remoteField] = ref.split(".");
-        if (!localField || !remoteField) continue;
-        const existing = refsByLocal.get(localField) || [];
-        existing.push(remoteField);
-        refsByLocal.set(localField, existing);
-      }
-
-      for (const [localField, remoteFields] of refsByLocal) {
-        const fkValue = record[localField];
-        if (fkValue === null || fkValue === undefined) {
-          // Set all dotted refs to null
-          for (const rf of remoteFields) {
-            resolved[`${localField}.${rf}`] = null;
-          }
-          continue;
-        }
-
-        // Find the M2O relation for this field
-        const relation = collectionRelations.find(
-          (r: any) => r.collection === collection && r.field === localField,
-        );
-
-        if (!relation || !relation.related_collection) {
-          logger.debug(
-            `[queryable-formula] No M2O relation found for "${collection}.${localField}"`,
-          );
-          for (const rf of remoteFields) {
-            resolved[`${localField}.${rf}`] = null;
-          }
-          continue;
-        }
-
-        const relatedCollection = relation.related_collection;
-        const relatedSchema = schema.collections[relatedCollection];
-        const relatedPK = relatedSchema?.primary ?? "id";
-
-        try {
-          const relatedRow = await knex
-            .select(remoteFields)
-            .from(relatedCollection)
-            .where(relatedPK, fkValue)
-            .first();
-
-          for (const rf of remoteFields) {
-            resolved[`${localField}.${rf}`] = relatedRow
-              ? (relatedRow[rf] ?? null)
-              : null;
-          }
-        } catch (err: any) {
-          logger.debug(
-            `[queryable-formula] Failed to resolve ${localField}.* from "${relatedCollection}": ${err.message}`,
-          );
-          for (const rf of remoteFields) {
-            resolved[`${localField}.${rf}`] = null;
-          }
-        }
-      }
-    } catch (err: any) {
-      logger.warn(
-        `[queryable-formula] relational resolution error: ${err.message}`,
-      );
-    }
-
-    return resolved;
+    const batchResult = await batchResolveRelationalData(
+      collection,
+      [record],
+      relationalRefs,
+      db,
+    );
+    return batchResult.get(0) || {};
   }
 
   /**
    * Batch-resolve relational data for many rows at once (avoids N+1 queries).
+   * Supports:
+   * - Simple M2O: {{category.name}}
+   * - Nested M2O chains: {{category.parent.name}}
+   * - O2M (One-to-Many): {{reviews.rating}} → comma-separated values
+   * - M2M (Many-to-Many): {{tags.name}} → comma-separated values
+   * - Mixed chains: {{category.products.name}} (M2O → O2M)
+   *
    * Returns a Map keyed by row index → resolved dotted fields.
    */
   async function batchResolveRelationalData(
@@ -211,81 +167,313 @@ export default (
 
     const knex = db || database;
 
+    // Initialize result map
+    for (let i = 0; i < rows.length; i++) {
+      result.set(i, {});
+    }
+
     try {
       const schema = await getSchema();
-      const collectionRelations = schema.relations || [];
+      const allRelations = schema.relations || [];
 
-      // Group: { category: ["name", "slug"], author: ["email"] }
-      const refsByLocal = new Map<string, string[]>();
+      // Process each ref as an independent chain walk
       for (const ref of relationalRefs) {
-        const [localField, remoteField] = ref.split(".");
-        if (!localField || !remoteField) continue;
-        const existing = refsByLocal.get(localField) || [];
-        existing.push(remoteField);
-        refsByLocal.set(localField, existing);
-      }
+        const segments = ref.split(".");
+        if (segments.length < 2) continue;
 
-      // For each relation, batch-fetch all unique FK values
-      const relationCache = new Map<string, Map<any, Record<string, any>>>();
+        // All segments except the last are relation hops; the last is the field to extract
+        const relationSegments = segments.slice(0, -1);
+        const finalField = segments[segments.length - 1]!;
 
-      for (const [localField, remoteFields] of refsByLocal) {
-        const relation = collectionRelations.find(
-          (r: any) => r.collection === collection && r.field === localField,
-        );
+        // Walk the relation chain, tracking cursors for each source row
+        let currentCollection = collection;
+        // Map: source row index → array of current cursor rows at this level
+        let cursors = new Map<number, Record<string, any>[]>();
+        for (let i = 0; i < rows.length; i++) {
+          cursors.set(i, [rows[i]!]);
+        }
 
-        if (!relation || !relation.related_collection) continue;
+        let chainBroken = false;
 
-        const relatedCollection = relation.related_collection;
-        const relatedSchema = schema.collections[relatedCollection];
-        const relatedPK = relatedSchema?.primary ?? "id";
-
-        // Collect unique FK values
-        const fkValues = [
-          ...new Set(
-            rows
-              .map((r) => r[localField])
-              .filter((v) => v !== null && v !== undefined),
-          ),
-        ];
-
-        if (fkValues.length === 0) continue;
-
-        try {
-          const relatedRows = await knex
-            .select([relatedPK, ...remoteFields])
-            .from(relatedCollection)
-            .whereIn(relatedPK, fkValues);
-
-          const lookup = new Map<any, Record<string, any>>();
-          for (const rr of relatedRows) {
-            lookup.set(rr[relatedPK], rr);
-          }
-          relationCache.set(localField, lookup);
-        } catch (err: any) {
-          logger.debug(
-            `[queryable-formula] Batch fetch failed for "${relatedCollection}": ${err.message}`,
+        for (const segment of relationSegments) {
+          // --- Try M2O first: currentCollection has an FK field → related collection ---
+          const m2oRelation = allRelations.find(
+            (r: any) =>
+              r.collection === currentCollection && r.field === segment,
           );
+
+          if (m2oRelation && m2oRelation.related_collection) {
+            const relatedCollection = m2oRelation.related_collection;
+            const relatedSchema = schema.collections[relatedCollection];
+            const relatedPK = relatedSchema?.primary ?? "id";
+
+            // Collect unique FK values across all cursor rows. Values may be
+            // expanded relation objects in Directus payloads, so normalize for
+            // lookup while keeping the scalar value for SQL.
+            const fkValues = new Map<string, any>();
+            for (const [, cursorRows] of cursors) {
+              for (const row of cursorRows) {
+                const fk = extractRelationKey(row[segment], relatedPK);
+                const key = normalizeRelationKey(fk);
+                if (key != null) fkValues.set(key, fk);
+              }
+            }
+
+            if (fkValues.size === 0) {
+              chainBroken = true;
+              break;
+            }
+
+            try {
+              const relatedRows = await knex
+                .select("*")
+                .from(relatedCollection)
+                .whereIn(relatedPK, [...fkValues.values()]);
+
+              const lookup = new Map<string, Record<string, any>>();
+              for (const rr of relatedRows) {
+                const key = normalizeRelationKey(rr[relatedPK], relatedPK);
+                if (key != null) lookup.set(key, rr);
+              }
+
+              const newCursors = new Map<number, Record<string, any>[]>();
+              for (const [rowIdx, cursorRows] of cursors) {
+                const next: Record<string, any>[] = [];
+                for (const row of cursorRows) {
+                  const key = normalizeRelationKey(row[segment], relatedPK);
+                  if (key != null) {
+                    const related = lookup.get(key);
+                    if (related) next.push(related);
+                  }
+                }
+                if (next.length > 0) newCursors.set(rowIdx, next);
+              }
+              cursors = newCursors;
+              currentCollection = relatedCollection;
+            } catch (err: any) {
+              logger.debug(
+                `[queryable-formula] M2O batch fetch failed for "${relatedCollection}": ${err.message}`,
+              );
+              chainBroken = true;
+              break;
+            }
+            continue;
+          }
+
+          // --- Try O2M / M2M: currentCollection is the "one" side ---
+          const o2mRelation = allRelations.find(
+            (r: any) =>
+              r.related_collection === currentCollection &&
+              r.meta?.one_field === segment,
+          );
+
+          if (o2mRelation) {
+            const currentSchema = schema.collections[currentCollection];
+            const currentPK = currentSchema?.primary ?? "id";
+
+            // Collect PKs from all cursor rows
+            const pkValues = new Map<string, any>();
+            for (const [, cursorRows] of cursors) {
+              for (const row of cursorRows) {
+                const pk = extractRelationKey(row[currentPK], currentPK);
+                const key = normalizeRelationKey(pk);
+                if (key != null) pkValues.set(key, pk);
+              }
+            }
+
+            if (pkValues.size === 0) {
+              chainBroken = true;
+              break;
+            }
+
+            if (o2mRelation.meta?.junction_field) {
+              // ── M2M: traverse junction table ──
+              const junctionCollection = o2mRelation.collection;
+              const junctionSourceFK = o2mRelation.field; // FK → current collection
+              const junctionTargetFK = o2mRelation.meta.junction_field; // FK → target collection
+
+              // Find the relation from junction → target
+              const junctionToTarget = allRelations.find(
+                (r: any) =>
+                  r.collection === junctionCollection &&
+                  r.field === junctionTargetFK,
+              );
+
+              if (
+                !junctionToTarget ||
+                !junctionToTarget.related_collection
+              ) {
+                logger.debug(
+                  `[queryable-formula] M2M: no target relation found from junction "${junctionCollection}.${junctionTargetFK}"`,
+                );
+                chainBroken = true;
+                break;
+              }
+
+              const targetCollection = junctionToTarget.related_collection;
+              const targetSchema = schema.collections[targetCollection];
+              const targetPK = targetSchema?.primary ?? "id";
+
+              try {
+                // Fetch junction rows
+                const junctionRows = await knex
+                  .select([junctionSourceFK, junctionTargetFK])
+                  .from(junctionCollection)
+                  .whereIn(junctionSourceFK, [...pkValues.values()]);
+
+                // Collect target PKs
+                const targetPKs = new Map<string, any>();
+                for (const jr of junctionRows) {
+                  const targetPKValue = extractRelationKey(
+                    jr[junctionTargetFK],
+                    targetPK,
+                  );
+                  const key = normalizeRelationKey(targetPKValue);
+                  if (key != null) targetPKs.set(key, targetPKValue);
+                }
+
+                if (targetPKs.size === 0) {
+                  chainBroken = true;
+                  break;
+                }
+
+                // Fetch target rows
+                const targetRows = await knex
+                  .select("*")
+                  .from(targetCollection)
+                  .whereIn(targetPK, [...targetPKs.values()]);
+
+                const targetLookup = new Map<string, Record<string, any>>();
+                for (const tr of targetRows) {
+                  const key = normalizeRelationKey(tr[targetPK], targetPK);
+                  if (key != null) targetLookup.set(key, tr);
+                }
+
+                // Build source PK → target rows mapping
+                const sourceToTargets = new Map<
+                  string,
+                  Record<string, any>[]
+                >();
+                for (const jr of junctionRows) {
+                  const sourceKey = normalizeRelationKey(
+                    jr[junctionSourceFK],
+                    currentPK,
+                  );
+                  const targetKey = normalizeRelationKey(
+                    jr[junctionTargetFK],
+                    targetPK,
+                  );
+                  const target = targetKey ? targetLookup.get(targetKey) : null;
+                  if (target) {
+                    const existing = sourceKey
+                      ? sourceToTargets.get(sourceKey) || []
+                      : [];
+                    existing.push(target);
+                    if (sourceKey) sourceToTargets.set(sourceKey, existing);
+                  }
+                }
+
+                const newCursors = new Map<
+                  number,
+                  Record<string, any>[]
+                >();
+                for (const [rowIdx, cursorRows] of cursors) {
+                  const next: Record<string, any>[] = [];
+                  for (const row of cursorRows) {
+                    const key = normalizeRelationKey(row[currentPK], currentPK);
+                    const targets = key ? sourceToTargets.get(key) || [] : [];
+                    next.push(...targets);
+                  }
+                  if (next.length > 0) newCursors.set(rowIdx, next);
+                }
+                cursors = newCursors;
+                currentCollection = targetCollection;
+              } catch (err: any) {
+                logger.debug(
+                  `[queryable-formula] M2M batch fetch failed: ${err.message}`,
+                );
+                chainBroken = true;
+                break;
+              }
+            } else {
+              // ── O2M: direct one-to-many ──
+              const manyCollection = o2mRelation.collection;
+              const manyField = o2mRelation.field;
+
+              try {
+                const manyRows = await knex
+                  .select("*")
+                  .from(manyCollection)
+                  .whereIn(manyField, [...pkValues.values()]);
+
+                // Group by FK value
+                const fkToRows = new Map<string, Record<string, any>[]>();
+                for (const mr of manyRows) {
+                  const key = normalizeRelationKey(mr[manyField], currentPK);
+                  if (key == null) continue;
+                  const existing = fkToRows.get(key) || [];
+                  existing.push(mr);
+                  fkToRows.set(key, existing);
+                }
+
+                const newCursors = new Map<
+                  number,
+                  Record<string, any>[]
+                >();
+                for (const [rowIdx, cursorRows] of cursors) {
+                  const next: Record<string, any>[] = [];
+                  for (const row of cursorRows) {
+                    const key = normalizeRelationKey(row[currentPK], currentPK);
+                    const related = key ? fkToRows.get(key) || [] : [];
+                    next.push(...related);
+                  }
+                  if (next.length > 0) newCursors.set(rowIdx, next);
+                }
+                cursors = newCursors;
+                currentCollection = manyCollection;
+              } catch (err: any) {
+                logger.debug(
+                  `[queryable-formula] O2M batch fetch failed for "${manyCollection}": ${err.message}`,
+                );
+                chainBroken = true;
+                break;
+              }
+            }
+            continue;
+          }
+
+          // No relation found for this segment
+          logger.debug(
+            `[queryable-formula] No relation found for "${currentCollection}.${segment}"`,
+          );
+          chainBroken = true;
+          break;
         }
-      }
 
-      // Now map each row to its resolved values
-      for (let i = 0; i < rows.length; i++) {
-        const row = rows[i]!;
-        const resolved: Record<string, any> = {};
-
-        for (const [localField, remoteFields] of refsByLocal) {
-          const fkValue = row[localField];
-          const lookup = relationCache.get(localField);
-          const relatedRow = fkValue != null ? lookup?.get(fkValue) : undefined;
-
-          for (const rf of remoteFields) {
-            resolved[`${localField}.${rf}`] = relatedRow
-              ? (relatedRow[rf] ?? null)
-              : null;
+        // Extract the final field from cursor rows and populate results
+        for (let i = 0; i < rows.length; i++) {
+          const resolved = result.get(i)!;
+          if (chainBroken) {
+            resolved[ref] = null;
+            continue;
+          }
+          const cursorRows = cursors.get(i);
+          if (!cursorRows || cursorRows.length === 0) {
+            resolved[ref] = null;
+          } else {
+            const values = cursorRows
+              .map((r) => r[finalField])
+              .filter((v) => v != null);
+            if (values.length === 0) {
+              resolved[ref] = null;
+            } else if (values.length === 1) {
+              resolved[ref] = values[0];
+            } else {
+              // Multiple values (O2M / M2M): comma-separated
+              resolved[ref] = values.join(", ");
+            }
           }
         }
-
-        result.set(i, resolved);
       }
     } catch (err: any) {
       logger.warn(
@@ -1023,29 +1211,19 @@ export default (
     );
 
     while (true) {
-      // Build query — select primary key + all fields needed
-      // by any formula (including FK columns for relational refs)
-      const allDependentFields = new Set<string>();
-      allDependentFields.add(primaryKey);
-
       // Collect all relational refs across formulas
       const allRelationalRefs: string[] = [];
 
       for (const ff of formulaFields) {
-        allDependentFields.add(ff.field);
-        for (const wf of ff.watchFields) {
-          allDependentFields.add(wf);
-        }
-        // Also include FK columns for relational refs
         for (const rr of ff.relationalRefs) {
-          const localField = rr.split(".")[0]!;
-          allDependentFields.add(localField);
           if (!allRelationalRefs.includes(rr)) allRelationalRefs.push(rr);
         }
       }
 
+      // Use select("*") to avoid issues with O2M/M2M alias fields
+      // that don't exist as real DB columns
       let query = database
-        .select([...allDependentFields])
+        .select("*")
         .from(collection)
         .orderBy(primaryKey, "asc")
         .limit(BATCH_SIZE)
